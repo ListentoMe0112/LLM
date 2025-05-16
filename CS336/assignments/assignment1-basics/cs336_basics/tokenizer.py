@@ -109,9 +109,95 @@ class Tokenizer:
         return tokens
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        # Encode iterables lazily
-        for text in iterable:
-            yield from self.encode(text)
+        buffer = ""
+        special_pattern = re.compile("(" + "|".join(map(re.escape, self.special_tokens)) + ")") if self.special_tokens else None
+        word_pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+        
+        for chunk in iterable:
+            # Combine buffer with new chunk
+            text = buffer + chunk
+            if not text:
+                continue
+
+            # Split text into parts using special tokens (same logic as encode())
+            parts = []
+            if special_pattern:
+                parts = special_pattern.split(text)
+            else:
+                parts = [text]
+
+            # Reassemble into documents and special tokens (matching encode() logic)
+            current_doc = []
+            pending_specials = []
+            for i, part in enumerate(parts):
+                if special_pattern and i % 2 == 1:  # Special token
+                    if current_doc:
+                        # Process accumulated document content first
+                        doc_text = "".join(current_doc)
+                        matches = list(word_pat.finditer(doc_text))
+                        if matches:
+                            last_valid_end = matches[-1].end()
+                            yield from self._process_document(doc_text[:last_valid_end], word_pat)
+                            buffer = doc_text[last_valid_end:]
+                        else:
+                            buffer = doc_text
+                        current_doc = [buffer]
+                    
+                    # Immediately process special token to maintain order
+                    yield self.vocab_inv[part.encode("utf-8")]
+                else:
+                    current_doc.append(part)
+
+            # Process remaining document content after splitting
+            doc_text = "".join(current_doc)
+            if doc_text:
+                matches = list(word_pat.finditer(doc_text))
+                if matches:
+                    last_valid_end = matches[-1].end()
+                    yield from self._process_document(doc_text[:last_valid_end], word_pat)
+                    buffer = doc_text[last_valid_end:]
+                else:
+                    buffer = doc_text
+
+            # Handle pending special tokens
+            for special in pending_specials:
+                yield self.vocab_inv[special.encode("utf-8")]
+            pending_specials.clear()
+                
+        # Process remaining buffer
+        if buffer:
+            yield from self._process_document(buffer, word_pat)
+
+    def _process_document(self, text: str, word_pat: re.Pattern) -> Iterator[int]:
+        """Process a single document segment (non-special token content)"""
+        for match in word_pat.finditer(text):
+            yield from self._process_token(match.group())
+    
+    def _process_token(self, token_str: str) -> Iterator[int]:
+        """Helper method to process individual tokens"""
+        print("New Word", token_str)
+        token_bytes = token_str.encode("utf-8")
+        old_token_bytes = [bytes([b]) for b in token_bytes]
+        
+        # Apply BPE merges
+        modified = True
+        while modified:
+            modified = False
+            for pair in self.merges:
+                i = 0
+                while i < len(old_token_bytes) - 1:
+                    if (old_token_bytes[i], old_token_bytes[i+1]) == pair:
+                        old_token_bytes[i] += old_token_bytes[i+1]
+                        del old_token_bytes[i+1]
+                        modified = True
+                        break  # Restart after modification
+                    i += 1
+                if modified:
+                    break
+        
+        # Yield token IDs
+        for k in old_token_bytes:
+            yield self.vocab_inv.get(k, self.vocab_inv.get(b"", 0))
 
     def decode(self, ids: List[int]) -> str:
         # Decode token IDs into text
