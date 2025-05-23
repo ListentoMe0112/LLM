@@ -13,6 +13,7 @@ import multiprocessing
 import regex as re
 from collections import defaultdict
 from cs336_basics import tokenizer
+from cs336_basics import utils 
 
 
 def run_linear(
@@ -34,8 +35,10 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
-
+    linear = utils.Linear(d_in, d_out)
+    with torch.no_grad():
+        linear.param.data.copy_(weights)
+    return linear(in_features)
 
 def run_embedding(
     vocab_size: int,
@@ -55,8 +58,10 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    embedding = utils.Embedding(vocab_size, d_model)
+    with torch.no_grad():
+        embedding.embedding_matrix.copy_(weights)
+    return embedding(token_ids)
 
 
 def run_swiglu(
