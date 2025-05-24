@@ -15,6 +15,8 @@ from collections import defaultdict
 from cs336_basics import tokenizer
 from cs336_basics import utils 
 
+from einops import einsum, reduce,rearrange 
+
 
 def run_linear(
     d_in: int,
@@ -93,7 +95,13 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    ffn = utils.FFN(d_model, d_ff)
+    with torch.no_grad():
+        print(w1_weight.shape)
+        ffn.w1.copy_(w1_weight) 
+        ffn.w2.copy_(w2_weight) 
+        ffn.w3.copy_(w3_weight) 
+    return ffn(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -114,7 +122,12 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    print('--------------------------')
+    print(mask.shape) # (4, 12 16)
+    print(Q.shape) # (4, 12, 64)
+    print(K.shape) # (4, 12, 16)
+    print('--------------------------')
+    return utils.dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -148,8 +161,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    multi_head_attention = utils.MultiHeadAttention(d_model, num_heads)
+    Q = einsum(in_features, q_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    K = einsum(in_features, k_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    V = einsum(in_features, v_proj_weight, "... seq_len d_in, d_v d_in -> ... seq_len d_v")
+    O =  multi_head_attention(Q, K, V)
+    O = einsum(O, o_proj_weight, "... seq_len d_model, d_model d_v -> ... seq_len d_v")
+    return O
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -210,7 +228,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = utils.RoPE(theta, d_k, max_seq_len)
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -388,7 +407,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rmsnorm = utils.RMSNorm(d_model, eps)
+    with torch.no_grad():
+        rmsnorm.param.copy_(weights)
+    return rmsnorm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -402,7 +424,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return torch.sigmoid(in_features) * in_features
 
 
 def run_get_batch(
@@ -441,7 +463,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return utils.softmax(in_features,dim)
 
 
 def run_cross_entropy(
