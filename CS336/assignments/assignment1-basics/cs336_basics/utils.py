@@ -164,6 +164,9 @@ class RoPE(nn.Module):
         # Make suresin/cos shape matches x1/x2
         # sin_pos = sin_pos.to(x1.device)
         # cos_pos = cos_pos.to(x1.device)
+        print("====================================")
+        print(x.shape, cos_pos.shape)
+        print("====================================")
 
         rotated_even = x1 * cos_pos - x2 * sin_pos
         rotated_odd  = x1 * sin_pos + x2 * cos_pos
@@ -207,11 +210,7 @@ class MultiHeadAttention(nn.Module):
         self.d_k =  self.d_model // self.num_heads
 
     def forward(self, Q, K, V):
-        batch_size = Q.shape[0]
-        q_multi_head = rearrange(Q, "... seq_len (num_head q_head) -> ... num_head seq_len q_head", num_head = self.num_heads)
-        k_multi_head = rearrange(K, "... seq_len (num_head k_head) -> ... num_head seq_len k_head", num_head = self.num_heads)
-        v_multi_head = rearrange(V, "... seq_len (num_head v_head) -> ... num_head seq_len v_head", num_head = self.num_heads)
-        masks = torch.triu(torch.ones(Q.shape[-2], K.shape[-2]))
-        masks = repeat(masks, "s1 s2 -> b1 b2 s1 s2", b1 = batch_size, b2 = batch_size)
-        o = dot_product_attention(q = q_multi_head, k = k_multi_head, v = v_multi_head, mask = masks)
-        return rearrange(o, "... num_head seq_len v_head -> ... seq_len (num_head v_head)")
+        mask = torch.tril(torch.ones(Q.shape[-2], K.shape[-2]))
+        mask = repeat(mask, "s1 s2 -> b h s1 s2", b = Q.shape[0], h = self.num_heads)
+        o = dot_product_attention(Q, K, V, mask)
+        return o

@@ -8,7 +8,8 @@ from typing import List, Tuple, Dict
 
 import numpy.typing as npt
 import torch
-from torch import Tensor
+from torch import Tensor 
+import torch.nn.functional as F
 import multiprocessing
 import regex as re
 from collections import defaultdict
@@ -122,11 +123,11 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    print('--------------------------')
-    print(mask.shape) # (4, 12 16)
-    print(Q.shape) # (4, 12, 64)
-    print(K.shape) # (4, 12, 16)
-    print('--------------------------')
+    # print('--------------------------')
+    # print(mask.shape) # (4, 12 16)
+    # print(Q.shape) # (4, 12, 64)
+    # print(K.shape) # (4, 12, 16)
+    # print('--------------------------')
     return utils.dot_product_attention(Q, K, V, mask)
 
 
@@ -161,13 +162,22 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    multi_head_attention = utils.MultiHeadAttention(d_model, num_heads)
+
     Q = einsum(in_features, q_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
     K = einsum(in_features, k_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
-    V = einsum(in_features, v_proj_weight, "... seq_len d_in, d_v d_in -> ... seq_len d_v")
-    O =  multi_head_attention(Q, K, V)
-    O = einsum(O, o_proj_weight, "... seq_len d_model, d_model d_v -> ... seq_len d_v")
-    return O
+    V = einsum(in_features, v_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+
+    Q = rearrange(Q, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    K = rearrange(K, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    V = rearrange(V, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+
+    multi_head_attention = utils.MultiHeadAttention(d_model, num_heads)
+    O = multi_head_attention(Q, K, V)
+
+    O  = rearrange(O, "... num_head seq_len d_k-> ... seq_len (num_head d_k)")
+    output = einsum(O, o_proj_weight, "... seq_len d_v, d_model d_v -> ... seq_len d_model")
+    
+    return output
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -206,7 +216,39 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    # Q = einsum(in_features, q_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    # K = einsum(in_features, k_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    # V = einsum(in_features, v_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+
+    # Q = rearrange(Q, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    # K = rearrange(K, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    # V = rearrange(V, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+
+    # multi_head_attention = utils.MultiHeadAttention(d_model, num_heads)
+    # O = multi_head_attention(Q, K, V)
+
+    # O  = rearrange(O, "... num_head seq_len d_k-> ... seq_len (num_head d_k)")
+    # output = einsum(O, o_proj_weight, "... seq_len d_v, d_model d_v -> ... seq_len d_model")
+    # 
+    # return output
+
+
+    multi_head_attention = utils.MultiHeadAttention(d_model, num_heads)
+    Q = einsum(in_features, q_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    K = einsum(in_features, k_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+    V = einsum(in_features, v_proj_weight, "... seq_len d_in, d_k d_in -> ... seq_len d_k")
+
+    Q = rearrange(Q, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    K = rearrange(K, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+    V = rearrange(V, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = num_heads)
+
+    rope = utils.RoPE(theta, Q.shape[-1], max_seq_len) 
+    Q = rope(Q, token_positions)
+    K = rope(K, token_positions)
+    O =  multi_head_attention(Q, K, V)
+    O  = rearrange(O, "... num_head seq_len d_k-> ... seq_len (num_head d_k)")
+    O = einsum(O, o_proj_weight, "... seq_len d_v, d_model d_v -> ... seq_len d_model")
+    return O
 
 
 def run_rope(
