@@ -16,7 +16,7 @@ from collections import defaultdict
 from cs336_basics import tokenizer
 from cs336_basics import utils 
 
-from einops import einsum, reduce,rearrange 
+from einops import einsum, reduce,rearrange, repeat
 
 
 def run_linear(
@@ -291,7 +291,7 @@ def run_transformer_block(
     Depending on your implementation, you may simply need to pass the relevant args
     to your TransformerBlock constructor, or you may need to initialize your own RoPE
     class and pass that instead.
-
+    
     Args:
         d_model (int): The dimensionality of the Transformer block input.
         num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
@@ -344,8 +344,26 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
-
+    transformer_block = utils.TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff)
+    with torch.no_grad():
+        """
+            attn.q_proj.weight
+            attn.k_proj.weight
+            attn.v_proj.weight
+            attn.output_proj.weight
+            ln1.weight
+            ffn.w1.weight
+        """
+        transformer_block.q_proj.param.copy_(weights["attn.q_proj.weight"])
+        transformer_block.k_proj.param.copy_(weights["attn.k_proj.weight"])
+        transformer_block.v_proj.param.copy_(weights["attn.v_proj.weight"])
+        transformer_block.o_proj.param.copy_(weights["attn.output_proj.weight"])
+        transformer_block.rms_norm1.param.copy_(weights["ln1.weight"])
+        transformer_block.ffn.w1.copy_(weights["ffn.w1.weight"])
+        transformer_block.ffn.w2.copy_(weights["ffn.w2.weight"])
+        transformer_block.ffn.w3.copy_(weights["ffn.w3.weight"])
+        transformer_block.rms_norm2.param.copy_(weights["ln2.weight"])
+    return transformer_block(in_features)
 
 def run_transformer_lm(
     vocab_size: int,
@@ -426,8 +444,23 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
-
+    transformer_lm = utils.TransformerLanguageModel(vocab_size, d_model, num_heads, rope_theta, context_length, d_ff, num_layers)
+    with torch.no_grad():
+        transformer_lm.embedding.embedding_matrix.copy_(weights["token_embeddings.weight"])
+        for i in range(num_layers):
+            pre = f"layers.{i}."
+            transformer_lm.transformer_blocks[i].q_proj.param.copy_(weights[pre + "attn.q_proj.weight"])
+            transformer_lm.transformer_blocks[i].k_proj.param.copy_(weights[pre + "attn.k_proj.weight"])
+            transformer_lm.transformer_blocks[i].v_proj.param.copy_(weights[pre + "attn.v_proj.weight"])
+            transformer_lm.transformer_blocks[i].o_proj.param.copy_(weights[pre + "attn.output_proj.weight"])
+            transformer_lm.transformer_blocks[i].rms_norm1.param.copy_(weights[pre + "ln1.weight"])
+            transformer_lm.transformer_blocks[i].ffn.w1.copy_(weights[pre + "ffn.w1.weight"])
+            transformer_lm.transformer_blocks[i].ffn.w2.copy_(weights[pre + "ffn.w2.weight"])
+            transformer_lm.transformer_blocks[i].ffn.w3.copy_(weights[pre + "ffn.w3.weight"])
+            transformer_lm.transformer_blocks[i].rms_norm2.param.copy_(weights[pre + "ln2.weight"])
+        transformer_lm.final_rms_norm.param.copy_(weights["ln_final.weight"])
+        transformer_lm.final_linear.param.copy_(weights["lm_head.weight"])
+    return transformer_lm(in_indices)
 
 def run_rmsnorm(
     d_model: int,
@@ -489,7 +522,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return utils.get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -523,7 +556,7 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return utils.cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(
@@ -537,14 +570,14 @@ def run_gradient_clipping(
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    return utils.gradient_clipping(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return utils.AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -572,7 +605,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return utils.learning_rate_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
@@ -591,7 +624,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    utils.save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -612,7 +645,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return utils.load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(

@@ -15,6 +15,7 @@ from typing import List, Tuple, Dict
 import numpy.typing as npt
 import torch
 from torch import Tensor
+import math
 
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -164,9 +165,6 @@ class RoPE(nn.Module):
         # Make suresin/cos shape matches x1/x2
         # sin_pos = sin_pos.to(x1.device)
         # cos_pos = cos_pos.to(x1.device)
-        print("====================================")
-        print(x.shape, cos_pos.shape)
-        print("====================================")
 
         rotated_even = x1 * cos_pos - x2 * sin_pos
         rotated_odd  = x1 * sin_pos + x2 * cos_pos
@@ -214,3 +212,213 @@ class MultiHeadAttention(nn.Module):
         mask = repeat(mask, "s1 s2 -> b h s1 s2", b = Q.shape[0], h = self.num_heads)
         o = dot_product_attention(Q, K, V, mask)
         return o
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads, theta, max_seq_len, d_ff):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.rms_norm1 = RMSNorm(d_model)
+        self.mha = MultiHeadAttention(d_model, num_heads)
+        self.q_proj = Linear(d_model, d_model)
+        self.k_proj = Linear(d_model, d_model)
+        self.v_proj = Linear(d_model, d_model)
+        self.o_proj = Linear(d_model, d_model)
+        self.theta = theta
+        self.d_k = d_model // num_heads
+        self.max_seq_len = max_seq_len
+        self.rope = RoPE(self.theta, self.d_k, self.max_seq_len) 
+        self.rms_norm2 = RMSNorm(d_model)
+        self.ffn = FFN(d_model, d_ff)
+
+
+    def forward(self, in_features):
+        norm_features = self.rms_norm1(in_features)
+        token_positions = torch.arange(in_features.shape[-2])
+        token_positions = repeat(token_positions, "seq -> b seq", b = in_features.shape[0])
+        Q = self.q_proj(norm_features)
+        K = self.k_proj(norm_features)
+        V = self.v_proj(norm_features)
+        Q = rearrange(Q, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = self.num_heads)
+        K = rearrange(K, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = self.num_heads)
+        V = rearrange(V, "... seq_len (num_head d_k) -> ... num_head seq_len d_k", num_head = self.num_heads)
+
+
+        Q = self.rope(Q, token_positions)
+        K = self.rope(K, token_positions)
+        O =  self.mha(Q, K, V)
+        O  = rearrange(O, "... num_head seq_len d_k-> ... seq_len (num_head d_k)")
+        O = self.o_proj(O)
+        in_features = in_features + O
+
+        norm_features = self.rms_norm2(in_features)
+
+        ret = self.ffn(norm_features) + in_features
+        return ret 
+
+class TransformerLanguageModel(nn.Module):
+    def __init__(self, vocab_size, d_model, num_heads, theta, max_seq_len, d_ff, num_layers):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+        self.dff  = d_ff
+        self.num_layes = num_layers
+        
+        self.embedding = Embedding(vocab_size, d_model)
+        self.transformer_blocks = []
+        for _ in range(num_layers):
+            self.transformer_blocks.append(TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff))
+        self.final_rms_norm = RMSNorm(d_model)
+        self.final_linear = Linear(d_model, vocab_size)
+
+    def forward(self, in_indices):
+        in_features = self.embedding(in_indices)
+        for transformer_block in self.transformer_blocks:
+            in_features = transformer_block(in_features)
+        in_features = self.final_rms_norm(in_features)
+        in_features = self.final_linear(in_features)
+        return in_features
+
+def cross_entropy(o: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+    """
+    Compute cross-entropy loss ℓi = -log softmax(oi)[xi+1]
+    Arguments:
+        o: Tensor of shape [..., vocab_size] – logits
+        x_next: Tensor of shape [...] – target indices
+    Returns:
+        Scalar – mean cross-entropy loss over the batch
+    """
+
+    row_indices = torch.arange(o.shape[0])
+    # Step 1: subtract max for numerical stability
+    o_max = o.max(dim=-1, keepdim=True).values
+    o_stable = o - o_max
+
+    # Step 2: compute logsumexp
+    logsumexp = torch.log(torch.sum(torch.exp(o_stable), dim=-1))
+
+    # Step 3: gather the logit at the target index
+    target_logit = o_stable[row_indices, x_next] 
+
+    # Step 4: compute negative log likelihood
+    loss = logsumexp - target_logit
+
+    # Step 5: return mean loss
+    return loss.mean()
+
+class AdamW(torch.optim.Optimizer):
+    # opt = opt_class(
+    #     model.parameters(),
+    #     lr=1e-3,
+    #     weight_decay=0.01,
+    #     betas=(0.9, 0.999),
+    #     eps=1e-8,
+    # )
+    def __init__(self, params, lr, weight_decay, betas, eps):
+        defaults = {
+            "lr" : lr,
+            "beta1" : betas[0], 
+            "beta2" : betas[1],
+            "eps" : eps, 
+            "lam" : weight_decay 
+        }
+        super().__init__(params=params, defaults = defaults)
+        
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
+            eps = group["eps"]
+            lam = group["lam"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p] 
+                grad = p.grad.data 
+                t = state.get("t", torch.ones_like(grad)) 
+                m = state.get("m", torch.zeros_like(grad))  #β1m + (1−β1)g
+                m = beta1 * m + (1-beta1) * grad
+                v = state.get("v", torch.zeros_like(grad))  #β2v + (1−β2)g2
+                v = beta2 * v + (1-beta2) * (grad ** 2)
+                alpha_t = lr * torch.sqrt(1 - (beta2 ** t)) / (1 - beta1 ** t)
+                p.data -= alpha_t * m / (torch.sqrt(v) + eps) 
+                p.data -= lr * lam * p.data
+                state["t"] = t + 1 
+                state["m"] = m 
+                state["v"] = v 
+        return loss
+
+def learning_rate_schedule(t, alpha_max, alpha_min, Tw, Tc):
+    if t < Tw:
+        return t / Tw * alpha_max
+    if t >= Tw and t <= Tc:
+        return alpha_min + 0.5 * (1 + math.cos((t - Tw)/(Tc - Tw) * torch.pi)) * (alpha_max - alpha_min)
+    if t > Tc:
+        return alpha_min
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    parameters = list(parameters)
+    total_norm = 0.0
+
+    # Calculate the global norm
+    for p in parameters:
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+
+    total_norm = total_norm ** 0.5
+
+    # Apply clipping if needed
+    if total_norm > max_l2_norm:
+        clip_coef = max_l2_norm / (total_norm + 1e-6)
+        for p in parameters:
+            if p.grad is not None:
+                p.grad.data.mul_(clip_coef)
+
+
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str)-> tuple[torch.Tensor, torch.Tensor]:
+    total_len = len(dataset)
+    x = []
+    y = []
+    for i in range(batch_size):
+        start_idx = torch.randint(low=1, high=total_len - context_length + 1, size=(1,))
+        x.append(torch.tensor(dataset[start_idx -1 : start_idx -1 + context_length], device = device))
+        y.append(torch.tensor(dataset[start_idx : start_idx + context_length], device = device))
+    # x = torch.concat(x, dim=0)    
+    # y = torch.concat(y, dim=0)
+    x = rearrange(x, "batch_size len -> batch_size len", batch_size=batch_size)
+    y = rearrange(y, "batch_size len -> batch_size len", batch_size=batch_size)
+    return (x,y)
+        
+def save_checkpoint(model : torch.nn.Module, optimizer : torch.optim.Optimizer, iteration : int , out : str):
+    """
+        should dump all the state from the first three parameters into the file-like object out. 
+        You can use the state_dict method of both the model and the optimizer to get their relevant 
+        states and use torch.save(obj, out) to dump obj into out (PyTorch supports either a path 
+        or a file-like object here). A typical choice is to have obj be a dictionary, 
+        but you can use whatever format you want as long as you can load your checkpoint later.
+
+        This function expects the following parameters:
+           model: torch.nn.Module
+           optimizer: torch.optim.Optimizer
+           iteration: int
+           out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]
+    """
+    save_dict = {}
+    save_dict["model_state_dict"] = model.state_dict()
+    save_dict["optimizer_state_dict"] = optimizer.state_dict()
+    save_dict["iteration"] = iteration
+    torch.save(save_dict, out)
+    return
+
+def load_checkpoint(src:str, model : torch.nn.Module , optimizer:torch.optim.Optimizer):
+    save_dict = torch.load(src)
+    model.load_state_dict(save_dict["model_state_dict"])
+    optimizer.load_state_dict(save_dict["optimizer_state_dict"])
+    return save_dict["iteration"]
+
