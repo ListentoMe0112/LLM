@@ -98,7 +98,6 @@ def run_swiglu(
     # swiglu.w3.weight.data = w3_weight
     ffn = utils.FFN(d_model, d_ff)
     with torch.no_grad():
-        print(w1_weight.shape)
         ffn.w1.copy_(w1_weight) 
         ffn.w2.copy_(w2_weight) 
         ffn.w3.copy_(w3_weight) 
@@ -701,24 +700,33 @@ def split_corpus_by_special_tokens(text: str, special_tokens: List[str]) -> List
     return documents
 
 
-def worker(file_path, start, end, queue,  special_tokens):
-    shared_dict = {}
-    with open(file_path, "rb") as f:
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        docs = split_corpus_by_special_tokens(chunk, special_tokens)
-        for doc in docs:
-            pat = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-            for match in re.finditer(pat, doc):
-                token_str = match.group()
-                token_bytes = token_str.encode("utf-8")
-                key = tuple(bytes([b]) for b in token_bytes)
-                if key in shared_dict:
-                    shared_dict[key] += 1
-                else:
-                    shared_dict[key] = 1
-    queue.put(shared_dict)
+def worker_wrapper(file_path, start, end, special_tokens):
+    """Wrapper function to ensure proper resource cleanup"""
+    try:
+        return worker(file_path, start, end, special_tokens)
+    finally:
+        # Explicitly clean up resources
+        import gc
+        gc.collect()
 
+def worker(file_path, start, end, special_tokens):
+    """Process a file chunk and return token frequencies"""
+    shared_dict = {}
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            docs = split_corpus_by_special_tokens(chunk, special_tokens)
+            for doc in docs:
+                pat = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+                for match in re.finditer(pat, doc):
+                    token_str = match.group()
+                    token_bytes = token_str.encode("utf-8")
+                    key = tuple(bytes([b]) for b in token_bytes)
+                    shared_dict[key] = shared_dict.get(key, 0) + 1
+    except Exception as e:
+        print(f"Error processing chunk {start}-{end}: {str(e)}")
+    return shared_dict
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -809,25 +817,20 @@ def run_train_bpe(
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, 256, "<|endoftext|>".encode("utf-8"))
 
-    queue = multiprocessing.Queue()
-   
     i = 0
-    processes = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        pre_token_list.append({})
-        tmp = multiprocessing.Process(
-                target=worker, args=(input_path, start, end, queue, special_tokens)
-        )
-        tmp.start()
-        i += 1
-        processes.append(tmp)
-
-    for _ in processes:
-        result = queue.get()  # Get result from the queue
-        pre_token_list.append(result)
-
-    for tmp in processes:
-        tmp.join()
+    # Use a process pool with limited size to avoid too many open files
+    max_processes = min(16, len(boundaries) - 1)  # Limit to 16 processes
+    with multiprocessing.Pool(processes=max_processes) as pool:
+        # Create arguments for each worker
+        args_list = [(input_path, start, end, special_tokens) 
+                     for start, end in zip(boundaries[:-1], boundaries[1:])]
+        
+        # Map tasks to workers and collect results
+        results = pool.starmap(worker_wrapper, args_list)
+        
+        # Process results
+        for result in results:
+            pre_token_list.append(result)
 
     for tmp_token_list in pre_token_list:
         for k, v in tmp_token_list.items():
@@ -914,8 +917,6 @@ def run_train_bpe(
     merges: list[tuple[bytes, bytes]] = []
     init_stats = get_initial_stats(pre_token_dict)
     while len(vocab) < vocab_size:
-        if len(vocab) % 100 == 0:
-            print(f"Merge: VocabNow: {len(vocab)}, {vocab_size}")
         pair_merge = get_most_frequent_pair(init_stats)
         merge(pre_token_dict, pair_merge, init_stats)
         merges.append(pair_merge)

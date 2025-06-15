@@ -44,20 +44,16 @@ class Tokenizer:
 
         return cls(vocab, merges, special_tokens)
 
-    def encode(self, text: str) -> List[int]:
-        tokens = []
+    def encode(self, text: str, max_workers: int = 4) -> List[int]:
         if text == "":
-            return tokens
- 
-        # Encode the text into a list of token IDs after applying BPE
+            return []
+        
+        # Split the text into documents and special tokens
         escaped_tokens = [re.escape(token) for token in self.special_tokens]
         pattern = "|".join(escaped_tokens)  # Create a pattern to match any special token
-        # split_indices = [(m.start(), m.end()) for m in re.finditer(pattern, text)]
-
-        # Split the text at the special tokens, keeping them as separators
         parts = re.split(f"({pattern})", text)
 
-        # Reassemble into separate documents (chunks), skipping the special tokens
+        # Reassemble into separate documents (chunks) and collect special tokens
         documents = []
         split_tokens = []
         current_doc = []
@@ -69,43 +65,67 @@ class Tokenizer:
                     current_doc = []
             else:
                 current_doc.append(part)
-
-        # Add the last document if there is remaining content
         if current_doc:
             documents.append("".join(current_doc))
 
+        # Process documents in parallel
+        tokens = []
+        if max_workers > 1 and len(documents) > 1:
+            # Use multiprocessing for multiple documents
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # Process each document in parallel
+                futures = []
+                for doc in documents:
+                    futures.append(executor.submit(
+                        self._encode_document, 
+                        doc, 
+                        self.merges, 
+                        self.vocab_inv
+                    ))
+                
+                # Collect results in order
+                for i, future in enumerate(futures):
+                    tokens.extend(future.result())
+                    # Add special token after each document except the last
+                    if i < len(split_tokens):
+                        tokens.append(self.vocab_inv.get(split_tokens[i].encode("utf-8")))
+        else:
+            # Single-threaded processing
+            for i, doc in enumerate(documents):
+                tokens.extend(self._encode_document(doc, self.merges, self.vocab_inv))
+                if i < len(split_tokens):
+                    tokens.append(self.vocab_inv.get(split_tokens[i].encode("utf-8")))
+                    
+        return tokens
+
+    @staticmethod
+    def _encode_document(document: str, merges: List[tuple[bytes, bytes]], vocab_inv: Dict[bytes, int]) -> List[int]:
+        """Process a single document and return token IDs"""
+        tokens = []
+        if not document:
+            return tokens
+            
         pat = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        special_token_idx = 0
-
-        for single_text in documents:
-            for match in re.finditer(pat, single_text):
-                token_str = match.group()
-                token_bytes = token_str.encode("utf-8")
-                modified = True
-                old_token_bytes = list(bytes([b]) for b in token_bytes)
-                while modified:
-                    modified = False
-                    # Iterate over the list of merges
-                    for pair in self.merges:
-                        i = 0
-                        # Check for the pair in the list of tokens
-                        while i < len(old_token_bytes) - 1:
-                            if (old_token_bytes[i], old_token_bytes[i + 1]) == pair:
-                                # Merge the tokens
-                                old_token_bytes[i] = old_token_bytes[i] + old_token_bytes[i + 1]
-                                del old_token_bytes[i + 1]
-                                modified = True  # A merge happened, so we need to restart the loop
-                                break  # After a merge, restart the merge process from the beginning
-                            i += 1
-                        if modified:
+        for match in re.finditer(pat, document):
+            token_str = match.group()
+            token_bytes = token_str.encode("utf-8")
+            modified = True
+            old_token_bytes = [bytes([b]) for b in token_bytes]
+            while modified:
+                modified = False
+                for pair in merges:
+                    i = 0
+                    while i < len(old_token_bytes) - 1:
+                        if (old_token_bytes[i], old_token_bytes[i+1]) == pair:
+                            old_token_bytes[i] += old_token_bytes[i+1]
+                            del old_token_bytes[i+1]
+                            modified = True
                             break
-
-                tokens += [self.vocab_inv.get(k) for k in old_token_bytes]
-
-            if special_token_idx < len(split_tokens):
-                tokens.append(self.vocab_inv.get(split_tokens[special_token_idx].encode("utf-8")))
-                special_token_idx += 1
-
+                        i += 1
+                    if modified:
+                        break
+            tokens.extend([vocab_inv.get(k) for k in old_token_bytes])
         return tokens
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -175,7 +195,6 @@ class Tokenizer:
     
     def _process_token(self, token_str: str) -> Iterator[int]:
         """Helper method to process individual tokens"""
-        print("New Word", token_str)
         token_bytes = token_str.encode("utf-8")
         old_token_bytes = [bytes([b]) for b in token_bytes]
         

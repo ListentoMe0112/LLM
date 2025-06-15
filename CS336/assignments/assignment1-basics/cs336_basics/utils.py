@@ -29,7 +29,7 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.param = nn.Parameter(torch.empty(out_features, in_features))
+        self.param = nn.Parameter(torch.empty(out_features, in_features)).to(device)
         nn.init.trunc_normal_(
             self.param,
             mean=0.0,
@@ -58,7 +58,7 @@ class Embedding(nn.Module):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.embedding_matrix = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
+        self.embedding_matrix = nn.Parameter(torch.empty(num_embeddings, embedding_dim)).to(device)
         nn.init.trunc_normal_(self.embedding_matrix, mean=0.0, std=2.0, a=-3, b=3)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -81,7 +81,7 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        self.param = nn.Parameter(torch.ones(d_model))
+        self.param = nn.Parameter(torch.ones(d_model, device=device)).to(device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -96,13 +96,13 @@ class RMSNorm(nn.Module):
         return result.to(in_dtype)
 
 class FFN(nn.Module):
-    def __init__(self, d_model, d_ff):
+    def __init__(self, d_model, d_ff,device):
         super().__init__()
         self.d_model = d_model
         self.d_ff = d_ff
-        self.w1 = nn.Parameter(torch.empty(d_ff, d_model))
-        self.w2 = nn.Parameter(torch.empty(d_model, d_ff))
-        self.w3 = nn.Parameter(torch.empty(d_ff, d_model))
+        self.w1 = nn.Parameter(torch.empty(d_ff, d_model)).to(device)
+        self.w2 = nn.Parameter(torch.empty(d_model, d_ff)).to(device)
+        self.w3 = nn.Parameter(torch.empty(d_ff, d_model)).to(device)
 
     def forward(self, input_features) -> torch.Tensor:
         w1x = einsum(input_features, self.w1, "... d_model, d_ff d_model -> ... d_ff")
@@ -139,8 +139,8 @@ class RoPE(nn.Module):
         # Compute angle = position * frequency
         angle = i * inv_k # [seq_len, dim/2]
 
-        sin_angles = torch.sin(angle)
-        cos_angles = torch.cos(angle)
+        sin_angles = torch.sin(angle).to(device)
+        cos_angles = torch.cos(angle).to(device)
         self.register_buffer("sin", sin_angles, persistent=False)
         self.register_buffer("cos", cos_angles, persistent=False)
 
@@ -201,41 +201,42 @@ def dot_product_attention(q: Float[Tensor, " ... queries d_k"],
     return attention
     
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, device):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k =  self.d_model // self.num_heads
+        self.device = device
 
     def forward(self, Q, K, V):
-        mask = torch.tril(torch.ones(Q.shape[-2], K.shape[-2]))
+        mask = torch.tril(torch.ones(Q.shape[-2], K.shape[-2])).to(self.device)
         mask = repeat(mask, "s1 s2 -> b h s1 s2", b = Q.shape[0], h = self.num_heads)
         o = dot_product_attention(Q, K, V, mask)
         return o
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, num_heads, theta, max_seq_len, d_ff):
+    def __init__(self, d_model, num_heads, theta, max_seq_len, d_ff, device):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
-        self.rms_norm1 = RMSNorm(d_model)
-        self.mha = MultiHeadAttention(d_model, num_heads)
-        self.q_proj = Linear(d_model, d_model)
-        self.k_proj = Linear(d_model, d_model)
-        self.v_proj = Linear(d_model, d_model)
-        self.o_proj = Linear(d_model, d_model)
+        self.rms_norm1 = RMSNorm(d_model, device = device)
+        self.mha = MultiHeadAttention(d_model, num_heads, device)
+        self.q_proj = Linear(d_model, d_model).to(device)
+        self.k_proj = Linear(d_model, d_model).to(device)
+        self.v_proj = Linear(d_model, d_model).to(device)
+        self.o_proj = Linear(d_model, d_model).to(device)
         self.theta = theta
         self.d_k = d_model // num_heads
         self.max_seq_len = max_seq_len
-        self.rope = RoPE(self.theta, self.d_k, self.max_seq_len) 
-        self.rms_norm2 = RMSNorm(d_model)
-        self.ffn = FFN(d_model, d_ff)
+        self.rope = RoPE(self.theta, self.d_k, self.max_seq_len, device = device) 
+        self.rms_norm2 = RMSNorm(d_model, device = device)
+        self.ffn = FFN(d_model, d_ff, device = device)
 
 
     def forward(self, in_features):
         norm_features = self.rms_norm1(in_features)
         token_positions = torch.arange(in_features.shape[-2])
-        token_positions = repeat(token_positions, "seq -> b seq", b = in_features.shape[0])
+        # token_positions = repeat(token_positions, "seq -> b seq", b = in_features.shape[0])
         Q = self.q_proj(norm_features)
         K = self.k_proj(norm_features)
         V = self.v_proj(norm_features)
@@ -257,7 +258,7 @@ class TransformerBlock(nn.Module):
         return ret 
 
 class TransformerLanguageModel(nn.Module):
-    def __init__(self, vocab_size, d_model, num_heads, theta, max_seq_len, d_ff, num_layers):
+    def __init__(self, vocab_size, d_model, num_heads, theta, max_seq_len, d_ff, num_layers, device):
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -267,12 +268,12 @@ class TransformerLanguageModel(nn.Module):
         self.dff  = d_ff
         self.num_layes = num_layers
         
-        self.embedding = Embedding(vocab_size, d_model)
+        self.embedding = Embedding(vocab_size, d_model,device=device)
         self.transformer_blocks = []
         for _ in range(num_layers):
-            self.transformer_blocks.append(TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff))
-        self.final_rms_norm = RMSNorm(d_model)
-        self.final_linear = Linear(d_model, vocab_size)
+            self.transformer_blocks.append(TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff, device))
+        self.final_rms_norm = RMSNorm(d_model, device = device)
+        self.final_linear = Linear(d_model, vocab_size, device=device)
 
     def forward(self, in_indices):
         in_features = self.embedding(in_indices)
@@ -387,13 +388,13 @@ def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device
     y = []
     for i in range(batch_size):
         start_idx = torch.randint(low=1, high=total_len - context_length + 1, size=(1,))
-        x.append(torch.tensor(dataset[start_idx -1 : start_idx -1 + context_length], device = device))
-        y.append(torch.tensor(dataset[start_idx : start_idx + context_length], device = device))
+        x.append(torch.tensor(dataset[start_idx -1 : start_idx -1 + context_length], device = device, dtype=torch.long))
+        y.append(torch.tensor(dataset[start_idx : start_idx + context_length], device = device, dtype=torch.long))
     # x = torch.concat(x, dim=0)    
     # y = torch.concat(y, dim=0)
     x = rearrange(x, "batch_size len -> batch_size len", batch_size=batch_size)
     y = rearrange(y, "batch_size len -> batch_size len", batch_size=batch_size)
-    return (x,y)
+    return x,y
         
 def save_checkpoint(model : torch.nn.Module, optimizer : torch.optim.Optimizer, iteration : int , out : str):
     """
