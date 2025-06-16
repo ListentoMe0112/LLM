@@ -269,9 +269,10 @@ class TransformerLanguageModel(nn.Module):
         self.num_layes = num_layers
         
         self.embedding = Embedding(vocab_size, d_model,device=device)
-        self.transformer_blocks = []
-        for _ in range(num_layers):
-            self.transformer_blocks.append(TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff, device))
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff, device)
+            for _ in range(num_layers)
+        ])
         self.final_rms_norm = RMSNorm(d_model, device = device)
         self.final_linear = Linear(d_model, vocab_size, device=device)
 

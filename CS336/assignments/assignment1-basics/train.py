@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--rope_theta', type=float, default=10000.0, help='RoPE theta parameter')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--max_iters', type=int, default=100000, help='Maximum training iterations')
-    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Maximum learning rate')
+    parser.add_argument('--learning_rate', type=float, default=6e-4, help='Maximum learning rate')
     parser.add_argument('--min_lr', type=float, default=6e-5, help='Minimum learning rate')
     parser.add_argument('--warmup_iters', type=int, default=2000, help='Warmup iterations')
     parser.add_argument('--lr_decay_iters', type=int, default=100000, help='Learning rate decay iterations')
@@ -73,7 +73,8 @@ def main():
         num_layers=args.num_layers,
         device=args.device
     ).to(args.device)    
-    print(f"Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model initialized with {total_params:,} parameters ({total_params/1e6:.2f}M)")
 
     # Compile model if requested
     if args.compile:
