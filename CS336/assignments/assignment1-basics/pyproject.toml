@@ -29,6 +29,7 @@ include = ["cs336_basics"]
 [tool.uv]
 package = true
 python-preference = "managed"
+index-url = "http://mirrors.cloud.tencent.com/pypi/simple"
 
 [tool.pytest.ini_options]
 log_cli = true
@@ -48,3 +49,5 @@ extend-select = ["UP"]
 ignore = [
     "F722"
 ]
+
+

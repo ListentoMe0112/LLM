@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--rope_theta', type=float, default=10000.0, help='RoPE theta parameter')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--max_iters', type=int, default=100000, help='Maximum training iterations')
-    parser.add_argument('--learning_rate', type=float, default=6e-4, help='Maximum learning rate')
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Maximum learning rate')
     parser.add_argument('--min_lr', type=float, default=6e-5, help='Minimum learning rate')
     parser.add_argument('--warmup_iters', type=int, default=2000, help='Warmup iterations')
     parser.add_argument('--lr_decay_iters', type=int, default=100000, help='Learning rate decay iterations')
@@ -127,6 +127,12 @@ def main():
         
         # Gradient clipping
         gradient_clipping(model.parameters(), max_l2_norm=args.grad_clip)
+        total_norm = 0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
         
         # Optimizer step
         optimizer.step()
@@ -137,7 +143,7 @@ def main():
             tokens_processed = iter_num * args.batch_size * args.context_length
             tokens_per_sec = tokens_processed / elapsed
             
-            print(f"Iter {iter_num:6d} | Loss {loss.item():.4f} | LR {lr:.2e} | TPS {tokens_per_sec/1e6:.2f}M/s")
+            print(f"Iter {iter_num:6d} | Loss {loss.item():.4f} | LR {lr:.2e} | TPS {tokens_per_sec/1e6:.2f}M/s | Gradient norm: {total_norm:.4f}")
             writer.add_scalar("train/loss", loss.item(), iter_num)
             writer.add_scalar("train/lr", lr, iter_num)
             writer.add_scalar("train/tokens_per_sec", tokens_per_sec, iter_num)
