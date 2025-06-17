@@ -221,7 +221,7 @@ class TransformerBlock(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.rms_norm1 = RMSNorm(d_model)
-        self.mha = MultiHeadAttention(d_model, num_heads)
+        self.mha = MultiHeadAttention(d_model, num_heads, device)
         self.q_proj = Linear(d_model, d_model)
         self.k_proj = Linear(d_model, d_model)
         self.v_proj = Linear(d_model, d_model)
@@ -270,7 +270,7 @@ class TransformerLanguageModel(nn.Module):
         
         self.embedding = Embedding(vocab_size, d_model)
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff)
+            TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff, device)
             for _ in range(num_layers)
         ])
         self.final_rms_norm = RMSNorm(d_model)
