@@ -24,13 +24,13 @@ class Linear(nn.Module):
         Construct a linear transformation module. This function should accept the following parameters:
         in_features: int final dimension of the input
         out_features: int final dimension of the output
-        device: torch.device | None = None Device to store the parameters on
+        device: torch.device | None = None (ignored, handled by parent module)
         dtype: torch.dtype | None = None Data type of the parameters
         """
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.param = nn.Parameter(torch.empty(out_features, in_features)).to(device)
+        self.param = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.trunc_normal_(
             self.param,
             mean=0.0,
@@ -51,15 +51,15 @@ class Embedding(nn.Module):
         """
         Construct an embedding module. This function should accept the following parameters
         Args:
-            num_embeddings (_type_): int Size of the vocabulary
-            embedding_dim (_type_):  int sieze of d_model
-            device (_type_, optional): _description_. Defaults to None.
-            dtype (_type_, optional): _description_. Defaults to None.
+            num_embeddings: int Size of the vocabulary
+            embedding_dim: int size of d_model
+            device: ignored, handled by parent module
+            dtype: torch.dtype | None = None Data type of the parameters
         """
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.embedding_matrix = nn.Parameter(torch.empty(num_embeddings, embedding_dim)).to(device)
+        self.embedding_matrix = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
         nn.init.trunc_normal_(self.embedding_matrix, mean=0.0, std=2.0, a=-3, b=3)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -76,13 +76,13 @@ class RMSNorm(nn.Module):
 
         d_model: int Hidden dimension of the model
         eps: float = 1e-5 Epsilon value for numerical stability
-        device: torch.device | None = None Device to store the parameters on
+        device: ignored, handled by parent module
         dtype: torch.dtype | None = None Data type of the parameters
         """
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        self.param = nn.Parameter(torch.ones(d_model, device=device)).to(device)
+        self.param = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -97,13 +97,13 @@ class RMSNorm(nn.Module):
         return result.to(in_dtype)
 
 class FFN(nn.Module):
-    def __init__(self, d_model, d_ff,device):
+    def __init__(self, d_model, d_ff, device=None):
         super().__init__()
         self.d_model = d_model
         self.d_ff = d_ff
-        self.w1 = nn.Parameter(torch.empty(d_ff, d_model)).to(device)
-        self.w2 = nn.Parameter(torch.empty(d_model, d_ff)).to(device)
-        self.w3 = nn.Parameter(torch.empty(d_ff, d_model)).to(device)
+        self.w1 = nn.Parameter(torch.empty(d_ff, d_model))
+        self.w2 = nn.Parameter(torch.empty(d_model, d_ff))
+        self.w3 = nn.Parameter(torch.empty(d_ff, d_model))
 
     def forward(self, input_features) -> torch.Tensor:
         w1x = einsum(input_features, self.w1, "... d_model, d_ff d_model -> ... d_ff")
@@ -216,28 +216,27 @@ class MultiHeadAttention(nn.Module):
         return o
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, num_heads, theta, max_seq_len, d_ff, device):
+    def __init__(self, d_model, num_heads, theta, max_seq_len, d_ff, device=None):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
-        self.rms_norm1 = RMSNorm(d_model, device = device)
-        self.mha = MultiHeadAttention(d_model, num_heads, device)
-        self.q_proj = Linear(d_model, d_model).to(device)
-        self.k_proj = Linear(d_model, d_model).to(device)
-        self.v_proj = Linear(d_model, d_model).to(device)
-        self.o_proj = Linear(d_model, d_model).to(device)
+        self.rms_norm1 = RMSNorm(d_model)
+        self.mha = MultiHeadAttention(d_model, num_heads)
+        self.q_proj = Linear(d_model, d_model)
+        self.k_proj = Linear(d_model, d_model)
+        self.v_proj = Linear(d_model, d_model)
+        self.o_proj = Linear(d_model, d_model)
         self.theta = theta
         self.d_k = d_model // num_heads
         self.max_seq_len = max_seq_len
-        self.rope = RoPE(self.theta, self.d_k, self.max_seq_len, device = device) 
-        self.rms_norm2 = RMSNorm(d_model, device = device)
-        self.ffn = FFN(d_model, d_ff, device = device)
+        self.rope = RoPE(self.theta, self.d_k, self.max_seq_len) 
+        self.rms_norm2 = RMSNorm(d_model)
+        self.ffn = FFN(d_model, d_ff)
 
 
     def forward(self, in_features):
         norm_features = self.rms_norm1(in_features)
-        token_positions = torch.arange(in_features.shape[-2])
-        # token_positions = repeat(token_positions, "seq -> b seq", b = in_features.shape[0])
+        token_positions = torch.arange(in_features.shape[-2], device=in_features.device)
         Q = self.q_proj(norm_features)
         K = self.k_proj(norm_features)
         V = self.v_proj(norm_features)
@@ -259,7 +258,7 @@ class TransformerBlock(nn.Module):
         return ret 
 
 class TransformerLanguageModel(nn.Module):
-    def __init__(self, vocab_size, d_model, num_heads, theta, max_seq_len, d_ff, num_layers, device):
+    def __init__(self, vocab_size, d_model, num_heads, theta, max_seq_len, d_ff, num_layers, device=None):
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -269,13 +268,13 @@ class TransformerLanguageModel(nn.Module):
         self.dff  = d_ff
         self.num_layes = num_layers
         
-        self.embedding = Embedding(vocab_size, d_model,device=device)
+        self.embedding = Embedding(vocab_size, d_model)
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff, device)
+            TransformerBlock(d_model, num_heads, theta, max_seq_len, d_ff)
             for _ in range(num_layers)
         ])
-        self.final_rms_norm = RMSNorm(d_model, device = device)
-        self.final_linear = Linear(d_model, vocab_size, device=device)
+        self.final_rms_norm = RMSNorm(d_model)
+        self.final_linear = Linear(d_model, vocab_size)
 
     def forward(self, in_indices):
         in_features = self.embedding(in_indices)
