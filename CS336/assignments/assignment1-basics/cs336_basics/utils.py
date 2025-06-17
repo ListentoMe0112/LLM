@@ -16,6 +16,7 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 import math
+import numpy as np
 
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -383,19 +384,28 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
                 p.grad.data.mul_(clip_coef)
 
 
-def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str)-> tuple[torch.Tensor, torch.Tensor]:
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
     total_len = len(dataset)
-    x = []
-    y = []
-    for i in range(batch_size):
-        start_idx = torch.randint(low=1, high=total_len - context_length + 1, size=(1,))
-        x.append(torch.tensor(dataset[start_idx -1 : start_idx -1 + context_length], device = device, dtype=torch.long))
-        y.append(torch.tensor(dataset[start_idx : start_idx + context_length], device = device, dtype=torch.long))
-    # x = torch.concat(x, dim=0)    
-    # y = torch.concat(y, dim=0)
-    x = rearrange(x, "batch_size len -> batch_size len", batch_size=batch_size)
-    y = rearrange(y, "batch_size len -> batch_size len", batch_size=batch_size)
-    return x,y
+    # Generate all start indices at once
+    start_indices = torch.randint(
+        low=1, 
+        high=total_len - context_length+1, 
+        size=(batch_size,)
+    ).numpy()
+    
+    # Pre-calculate indices for x and y
+    x_indices = start_indices[:, None] + np.arange(context_length) - 1
+    y_indices = start_indices[:, None] + np.arange(context_length)
+    
+    # Vectorized data extraction
+    x_data = dataset[x_indices.reshape(-1)].reshape(batch_size, context_length)
+    y_data = dataset[y_indices.reshape(-1)].reshape(batch_size, context_length)
+    
+    # Convert to tensors in one go
+    x_tensor = torch.tensor(x_data, dtype=torch.long, device=device)
+    y_tensor = torch.tensor(y_data, dtype=torch.long, device=device)
+    
+    return x_tensor, y_tensor
         
 def save_checkpoint(model : torch.nn.Module, optimizer : torch.optim.Optimizer, iteration : int , out : str):
     """
