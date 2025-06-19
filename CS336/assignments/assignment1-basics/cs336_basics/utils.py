@@ -267,6 +267,7 @@ class TransformerLanguageModel(nn.Module):
         self.max_seq_len = max_seq_len
         self.dff  = d_ff
         self.num_layes = num_layers
+        self.device = device
         
         self.embedding = Embedding(vocab_size, d_model)
         self.transformer_blocks = nn.ModuleList([
@@ -283,6 +284,74 @@ class TransformerLanguageModel(nn.Module):
         in_features = self.final_rms_norm(in_features)
         in_features = self.final_linear(in_features)
         return in_features
+        
+    @torch.no_grad()
+    def generate(
+        self,
+        prompt: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_p: float = None,
+        end_token_id: int = None
+    ) -> torch.Tensor:
+        """
+        Generate text completions for a given prompt.
+        
+        Args:
+            prompt: Tensor of shape (batch_size, seq_len) containing token IDs
+            max_new_tokens: Maximum number of new tokens to generate
+            temperature: Softmax temperature for sampling (higher = more random)
+            top_p: Threshold for top-p sampling (nucleus sampling)
+            end_token_id: Token ID that indicates end of text (stop generation if encountered)
+            
+        Returns:
+            Tensor of generated token IDs with shape (batch_size, seq_len + max_new_tokens)
+        """
+        self.eval()
+        generated = prompt.clone()
+        
+        for _ in range(max_new_tokens):
+            # Get model predictions for current sequence
+            # Use the entire sequence but limit to max_seq_len
+            input_seq = generated[:, -self.max_seq_len:]
+            logits = self(input_seq)
+            
+            # Focus on last token prediction
+            logits = logits[:, -1, :]
+            
+            # Apply temperature scaling
+            if temperature != 1.0:
+                logits = logits / temperature
+            
+            # Apply top-p filtering if specified
+            if top_p is not None and top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                
+                # Create mask to remove tokens with cumulative probability above threshold
+                sorted_indices_to_remove = cumulative_probs > top_p
+                # Keep at least one token above threshold
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                # Create mask for original indices
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    dim=1, index=sorted_indices, src=sorted_indices_to_remove
+                )
+                logits = logits.masked_fill(indices_to_remove, float('-inf'))
+            
+            # Sample next token
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            # Append new token to generated sequence
+            generated = torch.cat((generated, next_token), dim=1)
+            
+            # Check for end token
+            if end_token_id is not None and (next_token == end_token_id).all():
+                break
+        
+        return generated
 
 def cross_entropy(o: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
     """
