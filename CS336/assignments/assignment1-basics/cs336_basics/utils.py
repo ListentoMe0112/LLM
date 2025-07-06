@@ -348,7 +348,7 @@ class TransformerLanguageModel(nn.Module):
             generated = torch.cat((generated, next_token), dim=1)
             
             # Check for end token
-            if end_token_id is not None and (next_token == end_token_id).all():
+            if end_token_id is not None and next_token[0][0] == end_token_id[0]:
                 break
         
         return generated

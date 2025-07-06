@@ -1,11 +1,19 @@
-import argparse
-import json
+from cs336_basics.utils import (
+    TransformerLanguageModel,
+    AdamW,
+    get_batch,
+    cross_entropy,
+    gradient_clipping,
+    learning_rate_schedule,
+    save_checkpoint,
+    load_checkpoint
+)
+
 import numpy as np
-from tqdm import tqdm
 import os
+import json
 import tests.common as common
 import tests.adapters as ada
-import tiktoken
 
 def get_tokenizer_from_vocab_merges_path(
     vocab_path: str | os.PathLike,
@@ -44,27 +52,22 @@ def get_tokenizer_from_vocab_merges_path(
     ]
     return ada.get_tokenizer(vocab, merges, special_tokens)
 
-def main():
-    parser = argparse.ArgumentParser(description='Convert text file to binary token IDs')
-    parser.add_argument('--input', type=str, required=True, help='Input text file path')
-    parser.add_argument('--output', type=str, required=True, help='Output binary file path')
-    parser.add_argument('--vocab', type=str, required=True, help='Vocabulary JSON file')
-    parser.add_argument('--merges', type=str, required=True, help='Merges TXT file')
-    args = parser.parse_args()
 
-    tokenizer = get_tokenizer_from_vocab_merges_path(args.vocab, args.merges, special_tokens=["<|endoftext|>"])
-    
-    # Process text file in chunks
-    token_ids = []
-    
-    with open(args.input, 'r', encoding='utf-8') as f:
-        token_ids = tokenizer.encode(f.read(),max_workers=16)
-    # Convert to numpy array and save as binary
-    arr = np.array(token_ids, dtype=np.int32)
-    arr.tofile(args.output)
-    print(f"Saved {len(token_ids)} tokens to {args.output}")
+tokenizer = get_tokenizer_from_vocab_merges_path("tests/fixtures/gpt2_vocab.json", "tests/fixtures/gpt2_merges.txt", special_tokens=["<|endoftext|>"])
+train_data_path = "./data/TinyStoriesV2-GPT4-train.bin" 
 
-if __name__ == "__main__":
-    main()
+train_data = np.memmap(train_data_path, dtype=np.int32, mode='r')
+
+
+x, y = get_batch(
+    dataset=train_data,
+    batch_size=1,
+    context_length=1024,
+    device="mps"
+)
+
+generated_ids = x[0].tolist()
+
+print(tokenizer.decode(generated_ids))
 
 

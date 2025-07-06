@@ -1,6 +1,8 @@
 import json
 from typing import List, Dict, Optional, Iterable, Iterator
 import regex as re
+from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
 
 class Tokenizer:
     def __init__(self, vocab: Dict[int, bytes], merges: List[tuple[bytes, bytes]], special_tokens: Optional[List[str]] = None):
@@ -84,6 +86,7 @@ class Tokenizer:
                         self.vocab_inv
                     ))
                 
+                print(f"need process {len(futures)} files")
                 # Collect results in order
                 for i, future in enumerate(futures):
                     tokens.extend(future.result())
@@ -128,65 +131,151 @@ class Tokenizer:
             tokens.extend([vocab_inv.get(k) for k in old_token_bytes])
         return tokens
 
+
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         buffer = ""
         special_pattern = re.compile("(" + "|".join(map(re.escape, self.special_tokens)) + ")") if self.special_tokens else None
         word_pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
         
-        for chunk in iterable:
-            # Combine buffer with new chunk
-            text = buffer + chunk
-            if not text:
-                continue
-
-            # Split text into parts using special tokens (same logic as encode())
-            parts = []
-            if special_pattern:
-                parts = special_pattern.split(text)
-            else:
-                parts = [text]
-
-            # Reassemble into documents and special tokens (matching encode() logic)
-            current_doc = []
-            pending_specials = []
-            for i, part in enumerate(parts):
-                if special_pattern and i % 2 == 1:  # Special token
-                    if current_doc:
-                        # Process accumulated document content first
-                        doc_text = "".join(current_doc)
-                        matches = list(word_pat.finditer(doc_text))
-                        if matches:
-                            last_valid_end = matches[-1].end()
-                            yield from self._process_document(doc_text[:last_valid_end], word_pat)
-                            buffer = doc_text[last_valid_end:]
-                        else:
-                            buffer = doc_text
-                        current_doc = [buffer]
-                    
-                    # Immediately process special token to maintain order
-                    yield self.vocab_inv[part.encode("utf-8")]
-                else:
-                    current_doc.append(part)
-
-            # Process remaining document content after splitting
-            doc_text = "".join(current_doc)
-            if doc_text:
-                matches = list(word_pat.finditer(doc_text))
-                if matches:
-                    last_valid_end = matches[-1].end()
-                    yield from self._process_document(doc_text[:last_valid_end], word_pat)
-                    buffer = doc_text[last_valid_end:]
-                else:
-                    buffer = doc_text
-
-            # Handle pending special tokens
-            for special in pending_specials:
-                yield self.vocab_inv[special.encode("utf-8")]
-            pending_specials.clear()
+        # 线程池大小可以根据实际情况调整
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            # 批量处理多个块
+            batch_size = 100  # 可以根据性能调整
+            batch = []
+            
+            def process_chunk(text_chunk):
+                """处理单个文本块的辅助函数"""
+                local_buffer = text_chunk[0]
+                chunk = text_chunk[1]
+                results = []
                 
-        # Process remaining buffer
-        if buffer:
-            yield from self._process_document(buffer, word_pat)
+                # 与原函数相同的处理逻辑，但不直接yield，而是收集结果
+                text = local_buffer + chunk
+                if not text:
+                    return results
+                
+                parts = []
+                if special_pattern:
+                    parts = special_pattern.split(text)
+                else:
+                    parts = [text]
+                
+                current_doc = []
+                pending_specials = []
+                for i, part in enumerate(parts):
+                    if special_pattern and i % 2 == 1:  # Special token
+                        if current_doc:
+                            doc_text = "".join(current_doc)
+                            matches = list(word_pat.finditer(doc_text))
+                            if matches:
+                                last_valid_end = matches[-1].end()
+                                results.extend(self._process_document(doc_text[:last_valid_end], word_pat))
+                                local_buffer = doc_text[last_valid_end:]
+                            else:
+                                local_buffer = doc_text
+                            current_doc = [local_buffer]
+                        
+                        results.append(self.vocab_inv[part.encode("utf-8")])
+                    else:
+                        current_doc.append(part)
+                
+                doc_text = "".join(current_doc)
+                if doc_text:
+                    matches = list(word_pat.finditer(doc_text))
+                    if matches:
+                        last_valid_end = matches[-1].end()
+                        results.extend(self._process_document(doc_text[:last_valid_end], word_pat))
+                        local_buffer = doc_text[last_valid_end:]
+                    else:
+                        local_buffer = doc_text
+                
+                for special in pending_specials:
+                    results.append(self.vocab_inv[special.encode("utf-8")])
+                
+                return (local_buffer, results)
+            
+            for chunk in iterable:
+                batch.append((buffer, chunk))
+                buffer = ""  # 重置buffer，因为每个处理函数会维护自己的buffer
+                
+                if len(batch) >= batch_size:
+                    # 并行处理一批数据
+                    for result in executor.map(process_chunk, batch):
+                        new_buffer, tokens = result
+                        buffer = new_buffer  # 保留最后一个buffer
+                        yield from tokens
+                    batch = []
+            
+            # 处理剩余的批次
+            if batch:
+                for result in executor.map(process_chunk, batch):
+                    new_buffer, tokens = result
+                    buffer = new_buffer
+                    yield from tokens
+            
+            # 处理剩余的buffer
+            if buffer:
+                yield from self._process_document(buffer, word_pat)
+    
+    # def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+    #     buffer = ""
+    #     special_pattern = re.compile("(" + "|".join(map(re.escape, self.special_tokens)) + ")") if self.special_tokens else None
+    #     word_pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    #     
+    #     for chunk in iterable:
+    #         # Combine buffer with new chunk
+    #         text = buffer + chunk
+    #         if not text:
+    #             continue
+
+    #         # Split text into parts using special tokens (same logic as encode())
+    #         parts = []
+    #         if special_pattern:
+    #             parts = special_pattern.split(text)
+    #         else:
+    #             parts = [text]
+
+    #         # Reassemble into documents and special tokens (matching encode() logic)
+    #         current_doc = []
+    #         pending_specials = []
+    #         for i, part in enumerate(parts):
+    #             if special_pattern and i % 2 == 1:  # Special token
+    #                 if current_doc:
+    #                     # Process accumulated document content first
+    #                     doc_text = "".join(current_doc)
+    #                     matches = list(word_pat.finditer(doc_text))
+    #                     if matches:
+    #                         last_valid_end = matches[-1].end()
+    #                         yield from self._process_document(doc_text[:last_valid_end], word_pat)
+    #                         buffer = doc_text[last_valid_end:]
+    #                     else:
+    #                         buffer = doc_text
+    #                     current_doc = [buffer]
+    #                 
+    #                 # Immediately process special token to maintain order
+    #                 yield self.vocab_inv[part.encode("utf-8")]
+    #             else:
+    #                 current_doc.append(part)
+
+    #         # Process remaining document content after splitting
+    #         doc_text = "".join(current_doc)
+    #         if doc_text:
+    #             matches = list(word_pat.finditer(doc_text))
+    #             if matches:
+    #                 last_valid_end = matches[-1].end()
+    #                 yield from self._process_document(doc_text[:last_valid_end], word_pat)
+    #                 buffer = doc_text[last_valid_end:]
+    #             else:
+    #                 buffer = doc_text
+
+    #         # Handle pending special tokens
+    #         for special in pending_specials:
+    #             yield self.vocab_inv[special.encode("utf-8")]
+    #         pending_specials.clear()
+    #             
+    #     # Process remaining buffer
+    #     if buffer:
+    #         yield from self._process_document(buffer, word_pat)
 
     def _process_document(self, text: str, word_pat: re.Pattern) -> Iterator[int]:
         """Process a single document segment (non-special token content)"""

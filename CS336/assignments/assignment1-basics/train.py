@@ -57,8 +57,8 @@ def main():
 
     # Memory-efficient dataset loading with np.memmap
     print(f"Loading datasets with np.memmap...")
-    train_data = np.memmap(args.train_data, dtype=np.uint16, mode='r')
-    val_data = np.memmap(args.val_data, dtype=np.uint16, mode='r')
+    train_data = np.memmap(args.train_data, dtype=np.int32, mode='r')
+    val_data = np.memmap(args.val_data, dtype=np.int32, mode='r')
     print(f"Training data size: {len(train_data):,} tokens")
     print(f"Validation data size: {len(val_data):,} tokens")
 

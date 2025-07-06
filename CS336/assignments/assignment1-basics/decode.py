@@ -9,9 +9,10 @@ from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
+import os
+import tests.common as common
+import tests.adapters as ada
 import re  # 导入正则表达式模块
-
-
 
 # 初始化模型
 model = utils.TransformerLanguageModel(
@@ -27,64 +28,71 @@ model = utils.TransformerLanguageModel(
 
 
 # 加载模型权重
-checkpoint = torch.load("./models/best_model.pt", map_location="cpu")
+checkpoint = torch.load("./models/checkpoint_1000.pt", map_location="cpu")
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()  # 设置为评估模式
 
-with open("./gpt2_tokenizer/vocab.json", 'r') as f:
-    vocab = json.load(f)
-    
-with open("./gpt2_tokenizer/merges.txt", 'r', encoding='utf-8') as f:
-    merges = f.read().split('\n')[1:-1]  # 跳过第一行和最后一行
-    merges = [tuple(merge.split()) for merge in merges]
-    
-bpe = BPE(
-    vocab=vocab,
-    merges=merges,
-    unk_token="<|endoftext|>"
-)
+def get_tokenizer_from_vocab_merges_path(
+    vocab_path: str | os.PathLike,
+    merges_path: str | os.PathLike,
+    special_tokens: list[str] | None = None,
+):
+    gpt2_byte_decoder = {v: k for k, v in common.gpt2_bytes_to_unicode().items()}
+    with open(vocab_path) as vocab_f:
+        gpt2_vocab = json.load(vocab_f)
+    gpt2_bpe_merges = []
+    with open(merges_path) as f:
+        for line in f:
+            cleaned_line = line.rstrip()
+            if cleaned_line and len(cleaned_line.split(" ")) == 2:
+                gpt2_bpe_merges.append(tuple(cleaned_line.split(" ")))
+    # The GPT-2 tokenizer uses a remapped unicode encoding for bytes. Let's
+    # just return the original bytes, so we don't force students to use
+    # any particular encoding scheme.
+    vocab = {
+        gpt2_vocab_index: bytes([gpt2_byte_decoder[token] for token in gpt2_vocab_item])
+        for gpt2_vocab_item, gpt2_vocab_index in gpt2_vocab.items()
+    }
+    # If any of the special tokens don't exist in the vocab, append them to the vocab.
+    if special_tokens:
+        for special_token in special_tokens:
+            byte_encoded_special_token = special_token.encode("utf-8")
+            if byte_encoded_special_token not in set(vocab.values()):
+                vocab[len(vocab)] = byte_encoded_special_token
 
-tokenizer = Tokenizer(bpe)
-    
-tokenizer.pre_tokenizer = ByteLevel()
-tokenizer.post_processor = TemplateProcessing(
-    single="<|endoftext|> $A <|endoftext|>",
-    special_tokens=[("<|endoftext|>", tokenizer.token_to_id("<|endoftext|>"))]
-)
+    merges = [
+        (
+            bytes([gpt2_byte_decoder[token] for token in merge_token_1]),
+            bytes([gpt2_byte_decoder[token] for token in merge_token_2]),
+        )
+        for merge_token_1, merge_token_2 in gpt2_bpe_merges
+    ]
+    return ada.get_tokenizer(vocab, merges, special_tokens)
 
-# 自定义函数：去除Ġ字符并处理空格
-def clean_decoded_text(text):
-    # 去除Ġ字符
-    cleaned = text.replace('Ġ', ' ')
-    # 合并多余空格
-    cleaned = re.sub(r'\s+', ' ', cleaned)
-    # 去除开头和结尾空格
-    cleaned = cleaned.strip()
-    return cleaned
+
+tokenizer = get_tokenizer_from_vocab_merges_path("tests/fixtures/gpt2_vocab.json", "tests/fixtures/gpt2_merges.txt", special_tokens=["<|endoftext|>"])
 
 # 生成文本
-prompt_text = "Write a short story about Tom and Lily's adventure"
+prompt_text = "Xiaoyi Zhang loves eat shit"
 prompt_encoded = tokenizer.encode(prompt_text)
 # 解码并清理文本
-decoded_text = tokenizer.decode(prompt_encoded.ids)
-cleaned_text = clean_decoded_text(decoded_text)
-print(cleaned_text)
+decoded_text = tokenizer.decode(prompt_encoded)
+print(decoded_text)
 
 # 将编码后的提示转换为张量
-prompt_tensor = torch.tensor([prompt_encoded.ids], device="cpu")
+prompt_tensor = torch.tensor([prompt_encoded], device="cpu")
 
 # 生成文本
 generated = model.generate(
     prompt=prompt_tensor,
-    max_new_tokens=100,
-    #temperature=0.7,  # 降低温度减少随机性
-    top_p=0.95,       # 提高top-p增加连贯性
-    end_token_id=tokenizer.token_to_id("<|endoftext|>")
+    max_new_tokens=1024,
+    end_token_id=tokenizer.encode("<|endoftext|>", max_workers=1)
 )
 
 # 将张量转换为列表
 generated_ids = generated[0].tolist()
 
+# 解码并清理生成的文本
 decoded_text = tokenizer.decode(generated_ids)
-
 print(decoded_text)
+
