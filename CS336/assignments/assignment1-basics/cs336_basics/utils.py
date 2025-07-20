@@ -183,7 +183,7 @@ def softmax(x : torch.Tensor, dim: int):
     numerator = torch.sum(x_exp, dim = dim, keepdim=True)
     return x_exp / numerator 
     
-def dot_product_attention(q: Float[Tensor, " ... queries d_k"],
+def scaled_dot_product_attention(q: Float[Tensor, " ... queries d_k"],
     k: Float[Tensor, " ... keys d_k"],
     v: Float[Tensor, " ... values d_v"],
     mask: Float[Tensor, " ... queries keys"] | None = None,
@@ -212,7 +212,7 @@ class MultiHeadAttention(nn.Module):
     def forward(self, Q, K, V):
         mask = torch.tril(torch.ones(Q.shape[-2], K.shape[-2])).to(self.device)
         mask = repeat(mask, "s1 s2 -> b h s1 s2", b = Q.shape[0], h = self.num_heads)
-        o = dot_product_attention(Q, K, V, mask)
+        o = scaled_dot_product_attention(Q, K, V, mask)
         return o
 
 class TransformerBlock(nn.Module):
