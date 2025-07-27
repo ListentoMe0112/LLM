@@ -79,25 +79,15 @@ if __name__ == "__main__":
         for seq_len in seq_lens:
             try:
                 # Create inputs with current configuration
-                dummy_input = torch.randint(0, vocab_size, (batch_size, seq_len)).to('cuda')
-                dummy_output = torch.randint(0, vocab_size, (batch_size, seq_len)).to('cuda')
-                
-                # Create model with fixed parameters (num_heads=1)
-                model = TransformerLanguageModel(
-                    vocab_size=vocab_size,
-                    d_model=d_model,
-                    num_heads=num_heads,
-                    max_position_embeddings=10000.0,
-                    context_length=seq_len,
-                    d_ff=d_model*4,  # Standard FFN dimension
-                    num_layers=1,     # Single layer for benchmarking
-                    device='cuda'
-                ).to('cuda')
+                q_tensor = torch.rand(8, seq_len, d_model).to('cuda')
+                k_tensor = torch.rand(8, seq_len, d_model).to('cuda')
+                v_tensor = torch.rand(8, seq_len, d_model).to('cuda')
                 
                 # Warm-up phase
                 for _ in range(warm_up_iters):
-                    logits = model(dummy_input)
-                    logits.backward(torch.randn_like(logits))
+                    output = annotated_scaled_dot_product_attention(q_tensor, k_tensor, v_tensor)
+                    loss = output.sum()
+                    loss.backward()
                     torch.cuda.synchronize()
                 
                 # Forward pass timing
@@ -106,16 +96,15 @@ if __name__ == "__main__":
                     start = torch.cuda.Event(enable_timing=True)
                     end = torch.cuda.Event(enable_timing=True)
                     start.record()
-                    logits = model(dummy_input)
+                    output = annotated_scaled_dot_product_attention(q_tensor, k_tensor, v_tensor)
                     end.record()
                     torch.cuda.synchronize()
                     forward_times.append(start.elapsed_time(end))
                 
                 # Memory measurement before backward
-                memory_before = torch.cuda.memory_allocated()
-                
-                # Backward pass timing
-                dummy_loss = cross_entropy(logits.view(-1, logits.size(-1)), dummy_output.view(-1))
+                memory_before_backward = torch.cuda.memory_allocated()
+                loss = output.sum()
+
                 backward_times = []
                 for _ in range(test_iters):
                     start = torch.cuda.Event(enable_timing=True)
@@ -133,7 +122,7 @@ if __name__ == "__main__":
                     'seq_len': seq_len,
                     'forward_avg': sum(forward_times)/len(forward_times),
                     'backward_avg': sum(backward_times)/len(backward_times),
-                    'memory_usage': (torch.cuda.memory_allocated() - memory_before) / (1024**2),
+                    'memory_usage_before_backward': (torch.cuda.memory_allocated()) / (1024**2),
                     'oom': False
                 })
                 
