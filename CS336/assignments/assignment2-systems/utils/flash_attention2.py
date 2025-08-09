@@ -1,5 +1,7 @@
 import torch
 from einops import rearrange, einsum
+import triton
+from triton import language as tl
 
 class FlashAttention(torch.autograd.Function):
     @staticmethod
@@ -63,8 +65,9 @@ def flash_fwd_kernel(
         stride_vb, stride_vk, stride_vd,
         stride_ob, stride_oq, stride_od,
         stride_lb, stride_lq,
-        N_QUERIES, N_KEYS,
-        scale,
+        N_QUERIES : tl.constexpr, 
+        N_KEYS : tl.constexpr,
+        scale: tl.constexpr,
         D: tl.constexpr,
         Q_TILE_SIZE: tl.constexpr,
         K_TILE_SIZE: tl.constexpr,
@@ -107,7 +110,7 @@ def flash_fwd_kernel(
         O_ptr + batch_index * stride_ob,
         shape=(N_QUERIES, D),
         strides=(stride_oq, stride_od),
-        offsets=(0,0),
+        offsets=(query_tile_index * Q_TILE_SIZE,0),
         block_shape=(Q_TILE_SIZE, D),
         order=(1,0),
     )
@@ -116,14 +119,14 @@ def flash_fwd_kernel(
         L_ptr + batch_index * stride_lb,
         shape=(N_QUERIES,),
         strides=(stride_lq,),
-        offsets=(0,),
+        offsets=(query_tile_index * Q_TILE_SIZE,),
         block_shape=(Q_TILE_SIZE,),
         order=(0,),
     )
 
     q_i = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
-    o_i = tl.zeros(N_QUERIES, D)
-    l_i = tl.zeros(N_QUERIES,)
+    o_i = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    l_i = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
     m_i = tl.full((N_QUERIES,), -1e10, tl.float32)
 
     for j in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
@@ -133,10 +136,12 @@ def flash_fwd_kernel(
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, d]
 
         # Compute s_i_j using dot product
-        s_i_j = tl.dot(q_i, tl.transpose(k_j)) * _const  # [b_q, b_k]
+        k_j_t = tl.trans(k_j, 1,0)
+        s_i_j = tl.dot(q_i, k_j_t)   # [b_q, b_k]
+        s_i_j = s_i_j * scale
         
         # Update m_i: max of m_i and max(s_i_j, dim=-1)
-        m_i = tl.max(m_i, tl.max(s_i_j, axis=-1))  # [b_q]
+        m_i = tl.maximum(m_i, tl.max(s_i_j, axis=-1))  # [b_q]
         
         # Compute p_i_j (exponential scaling for softmax)
         p_i_j = tl.exp(s_i_j - m_i[:, None])  # Broadcast max(m_i) for stable softmax [b_q, b_k]
@@ -145,14 +150,61 @@ def flash_fwd_kernel(
         l_i = tl.exp(m_pre - m_i) * l_i + tl.sum(p_i_j, axis=-1)  # Update l_i based on m_pre and m_i
 
         # Broadcasting exp_m to scale o_i
-        o_i = o_i * tl.exp(m_pre - m_i)[:, None] + tl.dot(p_i_j, v_j)  # [batch_size, b_q, d] * [b_q, 1] + [b_q, b_k] * [b_k, d]
-        k_j.advanced((0, K_TILE_SIZE))
-        v_j.advanced((0, K_TILE_SIZE))
+        o_i = o_i * tl.exp(m_pre - m_i)[:, None] + tl.dot(tl.cast(p_i_j, v_j.dtype), v_j)  # [batch_size, b_q, d] * [b_q, 1] + [b_q, b_k] * [b_k, d]
+        K_block_ptr = K_block_ptr.advance((0, K_TILE_SIZE))
+        V_block_ptr = V_block_ptr.advance((0, K_TILE_SIZE))
     
     # Final steps after the loop
-    o_i = tl.dot(tl.inverse(tl.diag(l_i)), o_i)  # Inverse diag multiplication
+    o_i = o_i * (1 / l_i)[:None] # Inverse diag multiplication
     l_i = m_i + tl.log(l_i)  # Final log update
-    tl.store(O_block_ptr, o_i, boundary_check=(0,1))
+    tl.store(O_block_ptr, tl.cast(o_i, *O_block_ptr.type.element_ty), boundary_check=(0,1))
     tl.store(L_block_ptr, l_i, boundary_check=(0,))
+
+class FlashAttentionTriton(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, is_causal = False):
+        # q = torch.randn(batch_size, n_queries, D, device=device, requires_grad=True)
+        batch_size = q.shape[0]
+        n_q = q.shape[-2]
+        n_k = k.shape[-2]
+        b_q = 16
+        b_k = 16
+        t_q = n_q // b_q
+        t_k = n_k // b_k
+
+        d = q.shape[-1]
+        scale = 1.0 / (d ** 0.5)
+        _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32))
+
+        o = torch.zeros_like(q)
+        l = torch.zeros(q.shape[0], q.shape[1])
+
+        for i in range(1, t_q+1):
+            q_i = q[:, b_q * (i-1) : b_q * i] # [b_q, d]
+            o_i = torch.zeros(batch_size, b_q, d) # [b_q, d]
+            l_i = torch.zeros(batch_size, b_q) #[batch_size, b_q]
+            m_i = torch.zeros(batch_size, b_q) #[b_q]
+            m_i = torch.fill(m_i, -1e10)
+            flash_fwd_kernel[((n_q//b_q), batch_size,)](
+                q, k, v, # Q_ptr, K_ptr, V_ptr,
+                o, l, # O_ptr, L_ptr,
+                q.stride(0), q.stride(1), q.stride(2), # stride_qb, stride_qq, stride_qd,
+                k.stride(0), k.stride(1), k.stride(2), # stride_kb, stride_kk, stride_kd,
+                v.stride(0), v.stride(1), v.stride(2), # stride_vb, stride_vk, stride_vd,
+                o.stride(0), o.stride(1), o.stride(2), # stride_ob, stride_oq, stride_od,
+                l.stride(0), l.stride(1), # stride_lb, stride_lq,
+                n_q, n_k, # N_QUERIES, N_KEYS,
+                scale, # scale,
+                d, # D: tl.constexpr,
+                16, # Q_TILE_SIZE: tl.constexpr,
+                16 # K_TILE_SIZE: tl.constexpr,
+            )
+
+        ctx.save_for_backward(l)
+        return o
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        raise NotImplementedError
 
 

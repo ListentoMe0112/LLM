@@ -42,6 +42,25 @@ def annotated_scaled_dot_product_attention(q: Float[Tensor, " ... queries d_k"],
 cs336_basics.utils.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
 @nvtx.range("forward_and_backward")
+def one_step_with_autocast(model : torch.nn.Module, input: torch.Tensor, output: torch.tensor, optimizer):
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with nvtx.range("forward"):
+            logits = model(dummy_input)
+
+        with nvtx.range("loss_compute"):
+            loss = cross_entropy(logits.view(-1, logits.size(-1)), dummy_output.view(-1))
+
+        with nvtx.range("optimizer_zero"):
+            optimizer.zero_grad(set_to_none=True)
+
+        with nvtx.range("backward"):
+            loss.backward()
+
+        with nvtx.range("optimizer_step"):
+            optimizer.step()
+        
+        torch.cuda.synchronize()
+        
 def one_step(model : torch.nn.Module, input: torch.Tensor, output: torch.tensor, optimizer):
     with nvtx.range("forward"):
         logits = model(dummy_input)
@@ -67,7 +86,7 @@ def forward_time(model : torch.nn.Module, input: torch.Tensor):
     
 @nvtx.range("backward")
 def backward_time(logits):
-    logits.backward(retain_graph=True)
+    logits.backward()
     torch.cuda.synchronize()
 
 if __name__ == "__main__":
@@ -76,19 +95,14 @@ if __name__ == "__main__":
     parser.add_argument('--d_ff', type=int, required=True, help="d_ff")
     parser.add_argument('--num_layers', type=int, required=True, help="num_layers")
     parser.add_argument('--num_heads', type=int, required=True, help="num_heads")
-    parser.add_argument('--warm_up', type=int, required=True, help="warm_up")
-    parser.add_argument('--iteration', type=int, required=True, help="iteration")
-    parser.add_argument('--compile', action='store_true', help="Enable compilation")
-    parser.add_argument('--no-compile', action='store_false', dest='compile', help="Disable compilation")
+    parser.add_argument('--run_backward', type=bool, required=True, help="run_backward")
+    parser.add_argument('--warm_up', type=bool, required=True, help="warm_up")
+    parser.add_argument('--iteration', type=bool, required=True, help="warm_up")
     args = parser.parse_args()
-    print(args.compile)
 
-    dummy_input = torch.randint(0, 50527, (4, 1024)).to('cuda')
-    dummy_output = torch.randint(0, 50527, (4,1024)).to('cuda')
-    model = TransformerLanguageModel(50527, args.d_model, args.num_heads, 10000.0, 1024, args.d_ff, args.num_layers, device='cuda').to('cuda')
-    if args.compile:
-        model = torch.compile(model)
-
+    dummy_input = torch.randint(0, 50527, (4, 128)).to('cuda')
+    dummy_output = torch.randint(0, 50527, (4, 128)).to('cuda')
+    model = TransformerLanguageModel(50527, args.d_model, args.num_heads, 10000.0, 128, args.d_ff, args.num_layers, device='cuda').to('cuda')
 
     optimizer = AdamW(
         model.parameters(),
@@ -102,18 +116,9 @@ if __name__ == "__main__":
         one_step(model, dummy_input, dummy_output,optimizer)
         torch.cuda.synchronize()
 
-    partial_function = functools.partial(one_step, model, dummy_input, dummy_output, optimizer)
-    time_taken = timeit.timeit(stmt=partial_function, number=args.iteration)
-    print(f"Execution time with forward and backward: {time_taken}")
+    torch.cuda.memory._record_memory_history(max_entries=1000000)
+    for i in range(args.iteration):
+        one_step(model, dummy_input, dummy_output, optimizer)
 
-    partial_function = functools.partial(forward_time, model, dummy_input)
-    time_taken = timeit.timeit(stmt=partial_function, number=args.iteration)
-    print(f"Execution time with forward: {time_taken}")
-
-    if not args.compile:
-        logits = model(dummy_input)
-        loss = cross_entropy(logits.view(-1, logits.size(-1)), dummy_output.view(-1))
-        partial_function = functools.partial(backward_time, loss)
-        time_taken = timeit.timeit(stmt=partial_function, number=args.iteration)
-        print(f"Execution time with backward: {time_taken}")
-
+    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
