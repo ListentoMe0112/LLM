@@ -37,7 +37,8 @@ class FlashAttention(torch.autograd.Function):
                 m_i = torch.max(m_i, torch.max(s_i_j, dim = -1).values) #[b_q]
                 p_i_j = torch.exp(s_i_j - rearrange(m_i, "... -> ... 1")) #[b_q, b_k]
                 l_i = torch.exp(m_pre - m_i) * l_pre + torch.sum(p_i_j, dim = -1)
-                o_i = einsum(torch.diag_embed(torch.exp(m_pre - m_i)) , o_i, "batch_size b_q b_q, batch_size b_q d -> batch_size b_q d") + einsum(p_i_j , v_j, "batch_size b_q b_k, batch_size b_k d -> batch_size b_q d")
+                o_i = einsum(torch.diag_embed(torch.exp(m_pre - m_i)) , o_i, "batch_size b_q b_q, batch_size b_q d -> batch_size b_q d") + \
+                    einsum(p_i_j , v_j, "batch_size b_q b_k, batch_size b_k d -> batch_size b_q d")
 
             o_i = einsum(torch.diag_embed(l_i).inverse(), o_i, "batch_size b_q b_q, batch_size b_q d -> batch_size b_q d")
             l_i = m_i + torch.log(l_i)
@@ -127,7 +128,7 @@ def flash_fwd_kernel(
     q_i = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
     o_i = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero")
     l_i = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
-    m_i = tl.full((N_QUERIES,), -1e10, tl.float32)
+    m_i = tl.full((Q_TILE_SIZE,), -1e10, tl.float32)
 
     for j in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         m_pre = m_i
@@ -157,7 +158,7 @@ def flash_fwd_kernel(
     # Final steps after the loop
     o_i = o_i * (1 / l_i)[:None] # Inverse diag multiplication
     l_i = m_i + tl.log(l_i)  # Final log update
-    tl.store(O_block_ptr, tl.cast(o_i, *O_block_ptr.type.element_ty), boundary_check=(0,1))
+    tl.store(O_block_ptr, tl.cast(o_i, O_block_ptr.type.element_ty), boundary_check=(0,1))
     tl.store(L_block_ptr, l_i, boundary_check=(0,))
 
 class FlashAttentionTriton(torch.autograd.Function):
@@ -179,26 +180,20 @@ class FlashAttentionTriton(torch.autograd.Function):
         o = torch.zeros_like(q)
         l = torch.zeros(q.shape[0], q.shape[1])
 
-        for i in range(1, t_q+1):
-            q_i = q[:, b_q * (i-1) : b_q * i] # [b_q, d]
-            o_i = torch.zeros(batch_size, b_q, d) # [b_q, d]
-            l_i = torch.zeros(batch_size, b_q) #[batch_size, b_q]
-            m_i = torch.zeros(batch_size, b_q) #[b_q]
-            m_i = torch.fill(m_i, -1e10)
-            flash_fwd_kernel[((n_q//b_q), batch_size,)](
-                q, k, v, # Q_ptr, K_ptr, V_ptr,
-                o, l, # O_ptr, L_ptr,
-                q.stride(0), q.stride(1), q.stride(2), # stride_qb, stride_qq, stride_qd,
-                k.stride(0), k.stride(1), k.stride(2), # stride_kb, stride_kk, stride_kd,
-                v.stride(0), v.stride(1), v.stride(2), # stride_vb, stride_vk, stride_vd,
-                o.stride(0), o.stride(1), o.stride(2), # stride_ob, stride_oq, stride_od,
-                l.stride(0), l.stride(1), # stride_lb, stride_lq,
-                n_q, n_k, # N_QUERIES, N_KEYS,
-                scale, # scale,
-                d, # D: tl.constexpr,
-                16, # Q_TILE_SIZE: tl.constexpr,
-                16 # K_TILE_SIZE: tl.constexpr,
-            )
+        flash_fwd_kernel[((n_q//b_q), batch_size,)](
+            q, k, v, # Q_ptr, K_ptr, V_ptr,
+            o, l, # O_ptr, L_ptr,
+            q.stride(0), q.stride(1), q.stride(2), # stride_qb, stride_qq, stride_qd,
+            k.stride(0), k.stride(1), k.stride(2), # stride_kb, stride_kk, stride_kd,
+            v.stride(0), v.stride(1), v.stride(2), # stride_vb, stride_vk, stride_vd,
+            o.stride(0), o.stride(1), o.stride(2), # stride_ob, stride_oq, stride_od,
+            l.stride(0), l.stride(1), # stride_lb, stride_lq,
+            n_q, n_k, # N_QUERIES, N_KEYS,
+            scale, # scale,
+            d, # D: tl.constexpr,
+            16, # Q_TILE_SIZE: tl.constexpr,
+            16 # K_TILE_SIZE: tl.constexpr,
+        )
 
         ctx.save_for_backward(l)
         return o
