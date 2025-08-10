@@ -72,6 +72,7 @@ def flash_fwd_kernel(
         D: tl.constexpr,
         Q_TILE_SIZE: tl.constexpr,
         K_TILE_SIZE: tl.constexpr,
+        is_causal: tl.constexpr,
     ):
 
     # Program indices
@@ -125,10 +126,17 @@ def flash_fwd_kernel(
         order=(0,),
     )
 
+    mask_value = -1e6
+
     q_i = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
     o_i = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero")
     l_i = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
     m_i = tl.full((Q_TILE_SIZE,), -1e10, tl.float32)
+
+    # In Triton, construct
+    # appropriate index vectors for queries and keys, and compare them to form a square mask of size
+    # Bq × Bk . For elements that are masked out, add the constant value of -1e6 to the
+    # corresponding elements of the attention score matrix S(j)i
 
     for j in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         m_pre = m_i
@@ -136,10 +144,19 @@ def flash_fwd_kernel(
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, d]
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, d]
 
+
         # Compute s_i_j using dot product
         k_j_t = tl.trans(k_j, 1,0)
         s_i_j = tl.dot(q_i, k_j_t)   # [b_q, b_k]
         s_i_j = s_i_j * scale
+
+        if is_causal:
+            # Create index vectors for queries and keys
+            query_idx = tl.arange(0, Q_TILE_SIZE)[:, None]  # Shape: (b_q, 1)
+            key_idx = tl.arange(0, K_TILE_SIZE)  # Shape: (b_k,)
+            mask = query_idx - key_idx
+            mask = tl.where(mask >= 0, 0, -1e6)
+            s_i_j = s_i_j + mask
         
         # Update m_i: max of m_i and max(s_i_j, dim=-1)
         m_i = tl.maximum(m_i, tl.max(s_i_j, axis=-1))  # [b_q]
@@ -149,15 +166,27 @@ def flash_fwd_kernel(
         
         # Update l_i
         l_i = tl.exp(m_pre - m_i) * l_i + tl.sum(p_i_j, axis=-1)  # Update l_i based on m_pre and m_i
-
-        # Broadcasting exp_m to scale o_i
-        o_i = o_i * tl.exp(m_pre - m_i)[:, None] + tl.dot(tl.cast(p_i_j, v_j.dtype), v_j)  # [batch_size, b_q, d] * [b_q, 1] + [b_q, b_k] * [b_k, d]
-        K_block_ptr = K_block_ptr.advance((0, K_TILE_SIZE))
-        V_block_ptr = V_block_ptr.advance((0, K_TILE_SIZE))
+                # Compute the scaling factor for o_i
+        scale_o = tl.exp(m_pre - m_i)[:, None]
+        
+        # Scale o_i and add the new contribution
+        o_i = o_i * scale_o + tl.dot(tl.cast(p_i_j, v_j.dtype), v_j)
+        
+        K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
+        V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
     
     # Final steps after the loop
-    o_i = o_i * (1 / l_i)[:None] # Inverse diag multiplication
-    l_i = m_i + tl.log(l_i)  # Final log update
+    # Compute the inverse of l_i with proper broadcasting
+    inv_l_i = 1.0 / l_i
+    inv_l_i = tl.reshape(inv_l_i, (Q_TILE_SIZE, 1))
+    
+    # Scale o_i by the inverse of l_i
+    o_i = o_i * inv_l_i
+    
+    # Compute the final l_i value
+    l_i = m_i + tl.log(l_i)
+    
+    # Store the results
     tl.store(O_block_ptr, tl.cast(o_i, O_block_ptr.type.element_ty), boundary_check=(0,1))
     tl.store(L_block_ptr, l_i, boundary_check=(0,))
 
@@ -177,8 +206,8 @@ class FlashAttentionTriton(torch.autograd.Function):
         scale = 1.0 / (d ** 0.5)
         _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32))
 
-        o = torch.zeros_like(q)
-        l = torch.zeros(q.shape[0], q.shape[1])
+        o = torch.zeros_like(q, device = q.device)
+        l = torch.zeros(q.shape[0], q.shape[1], device= q.device)
 
         flash_fwd_kernel[((n_q//b_q), batch_size,)](
             q, k, v, # Q_ptr, K_ptr, V_ptr,
@@ -192,7 +221,8 @@ class FlashAttentionTriton(torch.autograd.Function):
             scale, # scale,
             d, # D: tl.constexpr,
             16, # Q_TILE_SIZE: tl.constexpr,
-            16 # K_TILE_SIZE: tl.constexpr,
+            16, # K_TILE_SIZE: tl.constexpr,
+            is_causal,
         )
 
         ctx.save_for_backward(l)
