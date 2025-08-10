@@ -152,8 +152,9 @@ def flash_fwd_kernel(
 
         if is_causal:
             # Create index vectors for queries and keys
-            query_idx = tl.arange(0, Q_TILE_SIZE)[:, None]  # Shape: (b_q, 1)
-            key_idx = tl.arange(0, K_TILE_SIZE)  # Shape: (b_k,)
+            query_idx = tl.arange(0, Q_TILE_SIZE) +  query_tile_index * Q_TILE_SIZE # Shape: (b_q, 1)
+            query_idx = query_idx[:, None]
+            key_idx = tl.arange(0, K_TILE_SIZE) + K_TILE_SIZE * j  # Shape: (b_k,)
             mask = query_idx - key_idx
             mask = tl.where(mask >= 0, 0, -1e6)
             s_i_j = s_i_j + mask
