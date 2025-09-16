@@ -78,6 +78,9 @@ def main(args):
              nprocs=args.num_processes,
              join=True)
 
+
+# Backend: nccl, Device: cuda, Data Size: 1024MB, Processes: 8, Avg Time: 4.197ms
+# Backend: gloo, Device: cpu, Data Size: 1024MB, Processes: 8, Avg Time: 1949.494ms
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="All-Reduce Benchmark")
     parser.add_argument("--backend", choices=["gloo", "nccl"], required=True)
