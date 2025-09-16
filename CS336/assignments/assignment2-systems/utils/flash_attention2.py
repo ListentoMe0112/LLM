@@ -16,16 +16,16 @@ class FlashAttention(torch.autograd.Function):
         t_k = n_k // b_k
 
         d = q.shape[-1]
-        _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32))
+        _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32, device=q.device))
 
-        o = torch.zeros_like(q)
-        l = torch.zeros(q.shape[0], q.shape[1])
+        o = torch.zeros_like(q, device = q.device)
+        l = torch.zeros(q.shape[0], q.shape[1], device=q.device)
 
         for i in range(1, t_q+1):
             q_i = q[:, b_q * (i-1) : b_q * i] # [b_q, d]
-            o_i = torch.zeros(batch_size, b_q, d) # [b_q, d]
-            l_i = torch.zeros(batch_size, b_q) #[batch_size, b_q]
-            m_i = torch.zeros(batch_size, b_q) #[b_q]
+            o_i = torch.zeros(batch_size, b_q, d, device = q.device) # [b_q, d]
+            l_i = torch.zeros(batch_size, b_q, device = q.device) #[batch_size, b_q]
+            m_i = torch.zeros(batch_size, b_q, device = q.device) #[b_q]
             m_i = torch.fill(m_i, -1e10)
             for j in range(1, t_k+1):
                 m_pre = m_i
@@ -46,12 +46,33 @@ class FlashAttention(torch.autograd.Function):
             o[:, b_q * (i-1) : b_q * i] = o_i
             l[:, b_q * (i-1) : b_q * i] = l_i
 
-        ctx.save_for_backward(l)
+        ctx.save_for_backward(q, k, v, o, l)
+        ctx.is_causal = is_causal
         return o
 
     @staticmethod
     def backward(ctx, grad_output):
-        raise NotImplementedError
+        do = grad_output
+        q,k,v,o,l  = ctx.saved_tensors
+        s = einsum(q, k, "... i k, ... j k -> ... i j")
+        scale = 1  / torch.sqrt(torch.tensor(q.shape[-1], dtype=torch.float32))
+        s = s * scale
+        if ctx.is_causal:
+            n = s.size(-1)
+            mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=s.device), 1)
+            s = s.masked_fill(mask, float('-inf'))
+        p = torch.exp(s - rearrange(l, "... -> ... 1"))
+        dv = einsum(p, do, "... i j, ... i d -> ... j d")
+        dp = einsum(do, v, "... i d, ... j d -> ... i j")
+        d = einsum(p, dp, "... i j, ... i j -> ... i")
+        tmp = dp - rearrange(d, "... -> ... 1")
+        ds = einsum(p, tmp, "... i j, ... i j -> ... i j")
+        dq = einsum(ds, k, "... i j, ... j d -> ... i d")
+        dq = dq * scale
+
+        dk = einsum(ds, q, "... i j, ... i d -> ... j d")
+        dk = dk * scale
+        return dq, dk, dv, None
 
 # Your launch grid should be set as (Tq , batch_size), meaning each Triton program instance
 # will load only elements from a single batch index, and only read/write to a single query tile
@@ -126,11 +147,10 @@ def flash_fwd_kernel(
         order=(0,),
     )
 
-    mask_value = -1e6
 
-    q_i = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
-    o_i = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero")
-    l_i = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
+    q_i = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(tl.float32)
+    o_i = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero").to(tl.float32)
+    l_i = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero").to(tl.float32)
     m_i = tl.full((Q_TILE_SIZE,), -1e10, tl.float32)
 
     # In Triton, construct
@@ -141,8 +161,8 @@ def flash_fwd_kernel(
     for j in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         m_pre = m_i
         # Extract the key and value slices for current j
-        k_j = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, d]
-        v_j = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, d]
+        k_j = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(tl.float32) # [b_k, d]
+        v_j = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero").to(tl.float32)# [b_k, d]
 
 
         # Compute s_i_j using dot product
@@ -205,7 +225,7 @@ class FlashAttentionTriton(torch.autograd.Function):
 
         d = q.shape[-1]
         scale = 1.0 / (d ** 0.5)
-        _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32))
+        _const = 1 / torch.sqrt(torch.tensor(d, dtype = torch.float32, device=q.device))
 
         o = torch.zeros_like(q, device = q.device)
         l = torch.zeros(q.shape[0], q.shape[1], device= q.device)
@@ -226,11 +246,30 @@ class FlashAttentionTriton(torch.autograd.Function):
             is_causal,
         )
 
-        ctx.save_for_backward(l)
+        ctx.save_for_backward(q,k,v,o,l)
+        ctx.is_causal = is_causal
         return o
 
     @staticmethod
     def backward(ctx, grad_output):
-        raise NotImplementedError
+        do = grad_output
+        q,k,v,o,l  = ctx.saved_tensors
+        s = einsum(q, k, "... i k, ... j k -> ... i j")
+        scale = 1  / torch.sqrt(torch.tensor(q.shape[-1], dtype=torch.float32))
+        s = s * scale
+        if ctx.is_causal:
+            n = s.size(-1)
+            mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=s.device), 1)
+            s = s.masked_fill(mask, float('-inf'))
+        p = torch.exp(s - rearrange(l, "... -> ... 1"))
+        dv = einsum(p, do, "... i j, ... i d -> ... j d")
+        dp = einsum(do, v, "... i d, ... j d -> ... i j")
+        d = einsum(p, dp, "... i j, ... i j -> ... i")
+        tmp = dp - rearrange(d, "... -> ... 1")
+        ds = einsum(p, tmp, "... i j, ... i j -> ... i j")
+        dq = einsum(ds, k, "... i j, ... j d -> ... i d")
+        dq = dq * scale
 
-
+        dk = einsum(ds, q, "... i j, ... i d -> ... j d")
+        dk = dk * scale
+        return dq, dk, dv, None
