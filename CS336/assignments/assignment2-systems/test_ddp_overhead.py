@@ -80,7 +80,7 @@ class DistributedDataParallel:
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=rank)  # Explicitly specify device_id
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)  # Explicitly specify device_id
 
 def cleanup():
     dist.destroy_process_group()
@@ -122,11 +122,12 @@ def train_process(rank, world_size):
         offset = rank * local_bs
         ddp_data = all_x[offset : offset + local_bs, :].to(device)
         ddp_labels = all_y[offset : offset + local_bs, :].to(device)
-        # Create CUDA events for timing
-        step_start_event = torch.cuda.Event(enable_timing=True)
-        step_end_event = torch.cuda.Event(enable_timing=True)
-        comm_start_event = torch.cuda.Event(enable_timing=True)
-        comm_end_event = torch.cuda.Event(enable_timing=True)
+        # Create CUDA events for timing (moved outside loop)
+        if i == 0:  # Only create events once
+            step_start_event = torch.cuda.Event(enable_timing=True, device=device)
+            step_end_event = torch.cuda.Event(enable_timing=True, device=device)
+            comm_start_event = torch.cuda.Event(enable_timing=True, device=device)
+            comm_end_event = torch.cuda.Event(enable_timing=True, device=device)
 
         # Synchronize before starting timing
         torch.cuda.synchronize(device=device)
@@ -157,9 +158,10 @@ def train_process(rank, world_size):
         # Record full step end after synchronization
         step_end_event.record()
         
-        # Calculate elapsed times
-        comm_time = comm_start_event.elapsed_time(comm_end_event) / 1000  # Convert ms to seconds
-        step_time = step_start_event.elapsed_time(step_end_event) / 1000  # Convert ms to seconds
+        # Calculate elapsed times with additional synchronization
+        torch.cuda.synchronize(device=device)
+        comm_time = comm_start_event.elapsed_time(comm_end_event) / 1000
+        step_time = step_start_event.elapsed_time(step_end_event) / 1000
         
         # Accumulate timings
         total_comm_time += comm_time
