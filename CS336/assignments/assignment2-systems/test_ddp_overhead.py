@@ -80,7 +80,7 @@ class DistributedDataParallel:
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)  # Use NCCL backend for GPU training
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=rank)  # Explicitly specify device_id
 
 def cleanup():
     dist.destroy_process_group()
@@ -89,23 +89,25 @@ def train_process(rank, world_size):
     # Initialize process group
     setup(rank, world_size)
     device = f'cuda:{rank}'  # Assign different GPUs to different ranks
-    dist.barrier()
+    dist.barrier(device_ids=[rank])  # Explicitly specify device for barrier
 
     # Seed to ensure that ranks are initialized with different initial models.
     torch.manual_seed(rank)
     
     # Create models and move to GPU
-    non_parallel_model = TransformerLanguageModel(50527, args.d_model, args.num_heads, 10000.0, 128, args.d_ff, args.num_layers, device=device).to(device)
+    non_parallel_model = TransformerLanguageModel(50527, 1600, 25, 10000.0, 128, 6400, 48, device=device).to(device)
     ddp_base = deepcopy(non_parallel_model)
     ddp_model = DistributedDataParallel(ddp_base)
 
     all_x = torch.randint(0, 50527, (8, 128)).to(device)
+    # Convert labels to one-hot encoding
     all_y = torch.randint(0, 50527, (8, 128)).to(device)
+    all_y = torch.nn.functional.one_hot(all_y, num_classes=50527).float()
 
     assert all_x.size(0) % world_size == 0
     local_bs = int(all_y.size(0) / world_size)
 
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.CrossEntropyLoss()
 
     # Optimizer for the DDP model
     ddp_optimizer = optim.SGD(ddp_model.parameters(), lr=0.1)
