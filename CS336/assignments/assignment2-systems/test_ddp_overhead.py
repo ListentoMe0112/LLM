@@ -89,7 +89,7 @@ def train_process(rank, world_size):
     # Initialize process group
     setup(rank, world_size)
     device = f'cuda:{rank}'  # Assign different GPUs to different ranks
-    dist.barrier(device_ids=[rank])  # Explicitly specify device for barrier
+    dist.barrier()  # Explicitly specify device for barrier
 
     # Seed to ensure that ranks are initialized with different initial models.
     torch.manual_seed(rank)
@@ -118,6 +118,7 @@ def train_process(rank, world_size):
     total_comm_time = 0.0
     
     for i in range(total_steps):
+        print(f"start {i}")
         ddp_optimizer.zero_grad()
         offset = rank * local_bs
         ddp_data = all_x[offset : offset + local_bs, :].to(device)
@@ -173,8 +174,6 @@ def train_process(rank, world_size):
             # Accumulate timings
             total_comm_time += comm_time
             total_step_time += step_time
-
-        dist.barrier()
 
         torch.manual_seed(42 + i)
         shuffle_idxs = torch.randperm(all_x.size(0))
