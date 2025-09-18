@@ -122,18 +122,21 @@ def train_process(rank, world_size):
         offset = rank * local_bs
         ddp_data = all_x[offset : offset + local_bs, :].to(device)
         ddp_labels = all_y[offset : offset + local_bs, :].to(device)
-        # Create CUDA events for timing (moved outside loop)
-        if i == 0:  # Only create events once
-            step_start_event = torch.cuda.Event(enable_timing=True, device=device)
-            step_end_event = torch.cuda.Event(enable_timing=True, device=device)
-            comm_start_event = torch.cuda.Event(enable_timing=True, device=device)
-            comm_end_event = torch.cuda.Event(enable_timing=True, device=device)
+        # Create CUDA events only on rank 0
+        if rank == 0 and i == 0:
+            torch.cuda.set_device(device)
+            step_start_event = torch.cuda.Event(enable_timing=True)
+            step_end_event = torch.cuda.Event(enable_timing=True)
+            comm_start_event = torch.cuda.Event(enable_timing=True)
+            comm_end_event = torch.cuda.Event(enable_timing=True)
 
         # Synchronize before starting timing
         torch.cuda.synchronize(device=device)
         
-        # Record full step start
-        step_start_event.record()
+        # Only rank 0 handles timing
+        if rank == 0:
+            # Record full step start
+            step_start_event.record()
         
         # Forward pass
         ddp_outputs = ddp_model(ddp_data)
@@ -144,28 +147,32 @@ def train_process(rank, world_size):
         
         # Synchronize before communication timing
         torch.cuda.synchronize(device=device)
-        comm_start_event.record()
+        if rank == 0:
+            comm_start_event.record()
+        
         ddp_model.all_reduce_gradients()
-        torch.cuda.synchronize(device=device)  # Ensure all_reduce completes
-        comm_end_event.record()
+        
+        torch.cuda.synchronize(device=device)
+        if rank == 0:
+            comm_end_event.record()
         
         # Optimization step
         ddp_optimizer.step()
         
         # Synchronize before recording end event
         torch.cuda.synchronize(device=device)
+        if rank == 0:
+            step_end_event.record()
         
-        # Record full step end after synchronization
-        step_end_event.record()
-        
-        # Calculate elapsed times with additional synchronization
-        torch.cuda.synchronize(device=device)
-        comm_time = comm_start_event.elapsed_time(comm_end_event) / 1000
-        step_time = step_start_event.elapsed_time(step_end_event) / 1000
-        
-        # Accumulate timings
-        total_comm_time += comm_time
-        total_step_time += step_time
+        # Calculate elapsed times only on rank 0
+        if rank == 0:
+            torch.cuda.synchronize(device=device)
+            comm_time = comm_start_event.elapsed_time(comm_end_event) / 1000
+            step_time = step_start_event.elapsed_time(step_end_event) / 1000
+            
+            # Accumulate timings
+            total_comm_time += comm_time
+            total_step_time += step_time
 
         dist.barrier()
 
