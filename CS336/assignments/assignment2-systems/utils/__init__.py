@@ -1,1 +1,2 @@
 from .flash_attention2 import FlashAttention, FlashAttentionTriton
+from .my_ddp import DistributedDataParallel
