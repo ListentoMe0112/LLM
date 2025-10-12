@@ -52,7 +52,8 @@ class DistributedDataParallel:
             if self.rank == 0:
                 param_buffer = [p.detach() for p in self.params]  # Keep parameters on GPU
             else:
-                param_buffer = [torch.zeros_like(p) for p in self.params]
+                # Create buffers directly on GPU
+                param_buffer = [torch.zeros_like(p, device=p.device) for p in self.params]
             
             # Broadcast each parameter
             for p in param_buffer:
@@ -108,7 +109,7 @@ def train_process(rank, world_size):
     torch.manual_seed(rank)
     
     # Create models and move to GPU
-    non_parallel_model = TransformerLanguageModel(50527, 1600, 25, 10000.0, 128, 6400, 48, device=device).to(device)
+    non_parallel_model = TransformerLanguageModel(50527, 800, 25, 10000.0, 128, 3200, 48, device=device).to(device)
     ddp_base = deepcopy(non_parallel_model)
     ddp_model = DistributedDataParallel(ddp_base)
 
@@ -126,7 +127,7 @@ def train_process(rank, world_size):
     ddp_optimizer = optim.SGD(ddp_model.parameters(), lr=0.1)
 
     # Benchmarking parameters
-    total_steps = 100
+    total_steps = 10
     total_step_time = 0.0
     total_comm_time = 0.0
     
@@ -202,6 +203,20 @@ def train_process(rank, world_size):
         print(f"Proportion of time spent on communication: {comm_proportion:.2%}")
 
     cleanup()
+
+    
+# simple implementation: 
+    # Benchmark Results (averaged over 100 steps):
+    # Total time per training step: 1.4727 seconds
+    # Proportion of time spent on communication: 3.35%
+# once comm: 
+    # Benchmark Results (averaged over 100 steps):
+    # Total time per training step: 1.4692 seconds
+    # Proportion of time spent on communication: 3.20%
+# overlap comm: 
+    # Benchmark Results (averaged over 100 steps):
+    # Total time per training step: 1.5306 seconds
+    # Proportion of time spent on communication: 0.00%
 
 if __name__ == "__main__":
     # Run distributed training
