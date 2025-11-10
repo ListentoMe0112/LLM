@@ -1,0 +1,157 @@
+\documentclass[]{article}
+\usepackage{amsfonts}
+\usepackage{newtxmath}
+\title{Postune For LLM}
+\author{Yeebo Xie}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Set Up}
+
+Make some setup first
+
+State S: prompt + generated response so far
+
+Action A: generate next token
+
+Rewards R: Deterministic Like the answer to a math question is right or not
+
+Transition probabilities: $\mathbb{T}(s^{'} | s, a)$
+
+Policy $\pi_{\theta}$: Language Model
+
+Rollout: $s1 -> a1 -> s2 -> a2 -> ... -> s_{done} -> R$
+
+
+
+\section{Policy Gradient}
+The expection of reward is the integral over the s on reward given s, and policy action.
+$$
+\mathbb{E}[R] = \int \mathbb{P}(s)\pi_{\theta}(a|s) \mathbb{R}(s,a) \,d(s)
+$$ 
+Take gradient of it:
+$$
+\bigtriangledown_{\theta} \mathbb{E}[R] = \int  \mathbb{P}(s)\bigtriangledown_{\theta}\pi_{\theta}(a|s) \mathbb{R}(s,a) \,d(s) \\
+$$
+$$
+\bigtriangledown_{\theta} \mathbb{E}[R] = \int  \mathbb{P}(s) \pi_{\theta}(a|s) \bigtriangledown_{\theta} \log \pi_{\theta}(a|s) \mathbb{R}(s,a) \,d(s) \\
+$$
+
+$$
+\bigtriangledown_{\theta} \mathbb{E}[R] = \mathbb{E} [ \bigtriangledown_{\theta} \log \pi_{\theta}(a|s) \mathbb{R}(s,a) ]
+$$
+
+Sample prompt s, sample response from $\pi_{\theta}(a|s)$
+
+Update paramters based on $\log \pi_{\theta}(a|s) \mathbb{R}(s,a)$
+
+\section{DPO}
+
+Start from the RLHF objective, max reward and penalty to a reference $\pi_{ref}$
+
+$$
+J(\pi) = \max_{\pi} \mathbb{E}_{x,y\sim\pi(y|x)}[r(x,y)] - \beta D_{KL}(\pi(\cdot|x) || \pi_{ref}(\cdot|x))
+$$
+
+Our goal is to find the policy $\pi_{r}$ that maximizes this $J(\pi)$
+\subsection{Step 1: Expand the KL divergence}
+
+$$
+D_{KL}(\pi(\cdot|x) || \pi_{ref}(\cdot|x)) = \sum_{y}\pi(y|x)[\log\pi(y|x) - \log\pi_{ref}(y|x)]
+$$
+
+Substitute that back into $J_{\pi}$:
+
+$$
+J(\pi) = \sum_{y}\pi(y|x)[r(x,y)] - \beta\sum_{y}\pi(y|x)[\log\pi(y|x) - \log\pi_{ref}(y|x)]
+$$
+
+simplify:
+
+$$
+J(\pi) = \sum_{y}\pi(y|x)[r(x,y) - \beta\log\frac{\pi(y|x)}{\pi_{ref}(y|x)} ]
+$$
+
+We must also keep in mind that probabilities sum to 1:
+$$
+\sum_{y}\pi(y|x) = 1
+$$
+
+\subsection{Step 2: Optimize over all possible $\pi$}
+
+We now want to find the probability distribution $\pi(y|x)$ that maximizes $J(\pi)$
+That’s a constrained optimization problem with the normalization constraint.
+We use a Lagrange multiplier $\lambda(x)$ for the constraint and form:
+
+$$
+\mathcal{L}(\pi, \lambda) = \sum_{y}\pi(y|x)[r(x,y) - \beta\log\frac{\pi(y|x)}{\pi_{ref}(y|x)} ] + \lambda(x)[1 - \sum_{y}\pi(y|x)]
+$$
+
+\subsection{Step 3: Take derivative and set to zero}
+
+Take derivative of $\mathcal{L}$ w.r.t. $\pi(y|x)$ and set to 0:
+$$
+    \frac{\partial\mathcal{L}}{\partial \pi(y|x)} = r(x,y) - \beta[\log\frac{\pi(y|x)}{\pi_{ref}(y|x)} + 1] - \lambda(x) = 0
+$$
+
+solve for $\log\frac{\pi(y|x)}{\pi_{ref}(y|x)}$:
+
+$$
+\log\frac{\pi(y|x)}{\pi_{ref}(y|x)} =  \frac{1}{\beta}[r(x,y) - \lambda(x)] - 1
+$$
+
+Exponentiate both sides:
+
+$$
+\pi(y|x) = \pi_{ref}(y|x)\exp({\frac{1}{\beta}[r(x,y) - \lambda(x)] - 1})
+$$
+
+The constants $1$ and $\lambda(x)$ 
+can be absorbed into a single normalization constant $Z(x)$, because they do not depend on $y$
+
+$$
+\pi(y|x) = \frac{1}{Z(x)} \pi_{ref}(y|x)\exp({\frac{1}{\beta}[r(x,y)]})
+$$
+where $Z(x)$ ensures the probabilities sum to 1 (for Lagrange).
+
+$$
+\pi(y|x) \propto \pi_{ref}(y|x)\exp({\frac{1}{\beta}[r(x,y)]})
+$$
+
+Intuition:
+
+High-reward actions get exponentially higher probability.
+
+But it’s still shaped by the reference model’s probabilities.
+
+$\beta$ acts like a temperature: small $\beta$ → more concentrated on high rewards.
+
+\subsection{Invert the relation to express reward in terms of the policy}
+
+From that equation, take log and rearrange:
+$$
+    r(x,y) = \beta \log \frac{\pi(y|x)}{\pi_{ref}(y|x)} + \beta \log Z(x)
+$$
+
+where $Z(x)$ is a normalization constant to make probabilities sum to 1.
+
+\subsection{Bring in preference data}
+Human preference data says: on the same prompt $x$, completion $y_w$ (winner) is preferred over $y_{l}$ (loser).
+
+$$
+P(y_w > y_l | x) = \sigma(r(y_w, x) - r(y_l, x))
+$$
+
+Now plug in our expression for $r(x,y)$ from Step 3:
+$$
+    r(y_w, x) - r(y_l, x) = \beta [ \log \frac{\pi(y_w|x)}{\pi_{ref}(y_w|x)} - \log \frac{\pi(y_l|x)}{\pi_{ref}(y_l|x)} ]
+$$
+
+and you want to maximizes the p:
+
+$$
+    \mathcal{L}_{DPO} = -\log \sigma (\beta [ \log \frac{\pi(y_w|x)}{\pi_{ref}(y_w|x)} - \log \frac{\pi(y_l|x)}{\pi_{ref}(y_l|x)} ]
+)
+$$
+
+\end{document}
