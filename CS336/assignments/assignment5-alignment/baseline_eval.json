@@ -1,0 +1,11 @@
+{
+  "name": "Baseline",
+  "accuracy": 0.0049502309752168395,
+  "total_samples": 93733,
+  "correct_samples": 464,
+  "format_right_and_answer_right": 464,
+  "format_right_and_answer_wrong": 7363,
+  "format_wrong_and_answer_wrong": 85906,
+  "format_correct_total": 7827,
+  "answer_correct_total": 464
+}
