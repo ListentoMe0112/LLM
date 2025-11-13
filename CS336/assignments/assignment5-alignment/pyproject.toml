@@ -29,6 +29,9 @@ include = ["cs336_alignment"]
 package = true
 no-build-isolation-package = ["flash-attn"]
 
+[[tool.uv.index]]
+url = "https://mirros/cloud.tencent.com/pypi/simple/"
+default = true
 
 [tool.uv.sources]
 alpaca-eval = { git = "https://github.com/nelson-liu/alpaca_eval.git", rev = "forward_kwargs_to_vllm" }

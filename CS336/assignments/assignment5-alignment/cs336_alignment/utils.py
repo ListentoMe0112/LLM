@@ -1,7 +1,7 @@
-from typing import Dict
+from typing import Dict, Callable
 import torch
 from transformers import PreTrainedTokenizerBase, PreTrainedModel
-import llm
+import vllm
 from vllm import SamplingParams
 def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str, torch.Tensor]: 
     """

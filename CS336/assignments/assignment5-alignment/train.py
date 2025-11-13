@@ -2,6 +2,11 @@ from cs336_alignment import utils
 import torch
 from datasets import load_dataset
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
+from transformers import PreTrainedTokenizerBase, PreTrainedModel,  AutoTokenizer, AutoModelForCausalLM
+from vllm import LLM, SamplingParams
+from unittest.mock import patch
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from torch.utils.data import DataLoader
 
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
@@ -47,8 +52,9 @@ def init_datasets():
     return train_ds, val_ds
 
 @torch.no_grad()
-def evaluate(val_loader, tokenizer, vllm_model):
+def evaluate(val_loader, tokenizer, vllm_model, policy):
     """遍历验证集，用 vLLM 生成并打印最终指标"""
+    load_policy_into_vllm_instance(policy, vllm_model)
     all_logs = []
     for batch in tqdm(val_loader, desc="Eval"):
         prompts = batch["prompts"]
@@ -58,7 +64,7 @@ def evaluate(val_loader, tokenizer, vllm_model):
             answers,
             tokenizer,
             vllm_model,
-            reward_fn=utils.dummy_reward,  # 如果换了 reward 模型，这里改掉
+            reward_fn=r1_zero_reward_fn,  # 如果换了 reward 模型，这里改掉
         )
         all_logs.extend(logs)
 
@@ -121,8 +127,8 @@ if __name__ == "__main__":
             solutions = batch["solutions"]
             answers = batch["answers"]
             input_infos = utils.tokenize_prompt_and_output(prompt_strs=prompts, output_strs=solutions, tokenizer=tokenizer)
-            ret = utils.get_response_log_probs(policy, input_infos["input_ids"], input_infos["labels"])
-            loss, _ = utils.sft_microbatch_train_step(ret["log_probs"], input_infos["response_mask"], 8)
+            ret = utils.get_response_log_probs(policy, input_infos["input_ids"].to("cuda:1"), input_infos["labels"].to("cuda:1"))
+            loss, _ = utils.sft_microbatch_train_step(ret["log_probs"], input_infos["response_mask"].to("cuda:1"), 8)
             if (step + 1) % gradient_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
@@ -131,9 +137,9 @@ if __name__ == "__main__":
                 print(f"step {step}  loss={loss.item():.4f}")
 
             if step % eval_every == 0:
-                evaluate(val_loader, tokenizer, vllm_model)
+                evaluate(val_loader, tokenizer, vllm_model, policy)
 
             step += 1
 
         # ---------- 一个 epoch 结束后，完整评测验证集 ----------
-        evaluate(val_loader, tokenizer, vllm_model)
+        evaluate(val_loader, tokenizer, vllm_model, policy)
