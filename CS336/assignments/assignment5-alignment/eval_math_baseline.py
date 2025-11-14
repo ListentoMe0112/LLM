@@ -89,9 +89,9 @@ if __name__ == "__main__":
     
     # Process dataset in batches
     for idx, question in enumerate(ds):
-        print(prompt_template.format(question = question["problem"]))
+        print(prompt_template.format(question = question["question"]))
         print(question["answer"])
-        prompts.append(prompt_template.format(question = question["problem"]))
+        prompts.append(prompt_template.format(question = question["question"]))
         ground_truths.append(question["answer"])
         cnt += 1
         
