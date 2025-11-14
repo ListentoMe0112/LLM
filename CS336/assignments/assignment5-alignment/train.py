@@ -1,3 +1,4 @@
+import os
 from cs336_alignment import utils
 import torch
 import torch.distributed as dist
@@ -72,6 +73,7 @@ def evaluate(val_loader, tokenizer, vllm_model, policy):
     correct = sum(int(l["answer_reward"] > 0) for l in all_logs)
     avg_len = sum(l["response_length"] for l in all_logs) / total
     print(f"Eval  finish  |  total={total}  correct={correct}  acc={correct/total:.4f}  avg_len={avg_len:.2f}")
+    print(all_logs[:10])
 
 if __name__ == "__main__":
     global_seed =42
@@ -82,6 +84,10 @@ if __name__ == "__main__":
     num_epochs = 1
     log_every = 50
     eval_every = 200
+    
+    # Create checkpoint directory
+    checkpoint_dir = "./checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Load prompt template
     with open("./cs336_alignment/prompts/r1_zero.prompt", "r") as f:
@@ -138,10 +144,42 @@ if __name__ == "__main__":
             if (step + 1) % log_every == 0:
                 print(f"step {step}  loss={loss.item():.4f}")
 
-            if (step + 1) % eval_every == 0:
-                evaluate(val_loader, tokenizer, vllm_model, policy)
+            # if (step + 1) % eval_every == 0:
+            #     evaluate(val_loader, tokenizer, vllm_model, policy)
 
             step += 1
 
         # ---------- 一个 epoch 结束后，完整评测验证集 ----------
         evaluate(val_loader, tokenizer, vllm_model, policy)
+        
+        # ---------- Save checkpoint ----------
+        checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}")
+        os.makedirs(checkpoint_path, exist_ok=True)
+        
+        # Save model state dict
+        model_path = os.path.join(checkpoint_path, "model.safetensors")
+        policy.save_pretrained(checkpoint_path, safe_serialization=True)
+        
+        # Save tokenizer
+        tokenizer.save_pretrained(checkpoint_path)
+        
+        # Save optimizer state
+        optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")
+        torch.save(optimizer.state_dict(), optimizer_path)
+        
+        # Save training metadata
+        metadata = {
+            "epoch": epoch + 1,
+            "step": step,
+            "global_seed": global_seed,
+            "model_id": model_id,
+            "lr": lr,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "micro_batch_size": micro_batch_size,
+        }
+        metadata_path = os.path.join(checkpoint_path, "training_metadata.json")
+        import json
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"Checkpoint saved to {checkpoint_path}")
