@@ -92,8 +92,9 @@ if __name__ == "__main__":
     for idx, question in enumerate(ds):
         print(prompt_template.format(question = question["question"]))
         print(utils.answer_transform(question["answer"]))
+        print(utils.ground_truth_transform(question["answer"]))
         prompts.append(prompt_template.format(question = question["question"]))
-        ground_truths.append(question["answer"])
+        ground_truths.append(utils.ground_truth_transform["answer"])
         cnt += 1
         
         # Process batch when it reaches 1024 samples

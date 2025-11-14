@@ -251,5 +251,13 @@ def answer_transform(ans: str) -> str:
 
     return formatted_answer
 
-
-    
+def ground_truth_transform(ans: str) -> float:
+    # Extract the final number from the answer and format it
+    import re
+    # Look for the final answer number (usually after ####)
+    match = re.search(r'####\s*(\d+)', ans)
+    if match:
+        final_answer = match.group(1)
+        return final_answer
+    else:
+        return 0
