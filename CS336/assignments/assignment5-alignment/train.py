@@ -58,10 +58,10 @@ def evaluate(val_loader, tokenizer, vllm_model, policy):
     all_logs = []
     for batch in tqdm(val_loader, desc="Eval"):
         prompts = batch["prompts"]
-        answers = batch["answers"]
+        ground_truths = batch["ground_truths"]
         logs = utils.log_generations_vllm(
             prompts,
-            answers,
+            ground_truths,
             tokenizer,
             vllm_model,
             reward_fn=r1_zero_reward_fn,  
@@ -112,10 +112,13 @@ if __name__ == "__main__":
         prompts = [prompt_template.format(question = ex["question"]) for ex in batch ] 
         # Format answers to match the template
         formatted_answers = []
+        ground_truths = []
         for ans in [ex["answer"] for ex in batch]:
             formatted_answer = utils.answer_transform(ans)
             formatted_answers.append(formatted_answer)
-        return {"prompts" : prompts,  "answers" : formatted_answers}
+            ground_truth = utils.answer_transform(ans)
+            ground_truths.append(ground_truth)
+        return {"prompts" : prompts,  "answers" : formatted_answers, "ground_truths" : ground_truths}
 
     train_loader = DataLoader(
         train_ds,
