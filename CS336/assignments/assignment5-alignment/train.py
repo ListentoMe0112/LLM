@@ -106,8 +106,12 @@ if __name__ == "__main__":
 
     def collate_fn(batch):
         prompts = [prompt_template.format(question = ex["question"]) for ex in batch ] 
-        answers = [ex["answer"] for ex in batch]
-        return {"prompts" : prompts,  "answers" :answers}
+        # Format answers to match the template
+        formatted_answers = []
+        for ans in [ex["answer"] for ex in batch]:
+            formatted_answer = utils.answer_transform(ans)
+            formatted_answers.append(formatted_answer)
+        return {"prompts" : prompts,  "answers" : formatted_answers}
 
     train_loader = DataLoader(
         train_ds,

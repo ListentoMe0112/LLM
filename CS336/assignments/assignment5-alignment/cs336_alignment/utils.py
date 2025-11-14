@@ -230,6 +230,26 @@ def log_generations_vllm(
 
     return logs
     
+def answer_transform(ans: str) -> str:
+    # Extract the final number from the answer and format it
+    import re
+    # Look for the final answer number (usually after ####)
+    match = re.search(r'####\s*(\d+)', ans)
+    if match:
+        final_answer = match.group(1)
+        # Remove the #### part and keep the reasoning
+        reasoning = re.sub(r'####\s*\d+', '', ans).strip()
+        formatted_answer = f"{reasoning}</think>\n<answer>{final_answer}</answer>"
+    else:
+        # If no #### found, try to extract the last number
+        numbers = re.findall(r'\d+', ans)
+        if numbers:
+            final_answer = numbers[-1]
+            formatted_answer = f"{ans}\n<answer>{final_answer}</answer>"
+        else:
+            formatted_answer = ans  # Keep original if no number found
+
+    return formatted_answer
 
 
     

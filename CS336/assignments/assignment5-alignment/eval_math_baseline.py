@@ -1,5 +1,6 @@
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
+from cs336_alignment import utils
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from typing import Callable, List, Dict, Tuple
 import json
@@ -90,7 +91,7 @@ if __name__ == "__main__":
     # Process dataset in batches
     for idx, question in enumerate(ds):
         print(prompt_template.format(question = question["question"]))
-        print(question["answer"])
+        print(utils.answer_transform(question["answer"]))
         prompts.append(prompt_template.format(question = question["question"]))
         ground_truths.append(question["answer"])
         cnt += 1
