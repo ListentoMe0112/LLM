@@ -46,8 +46,8 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 def init_datasets():
-    raw_ds = load_dataset("openai/gsm8k", split="train")
-    train_val = raw_ds.train_test_split(test_size=0.01, seed=42)
+    raw_ds = load_dataset("openai/gsm8k", "main",split="train")
+    train_val = raw_ds.train_test_split(test_size=0.05, seed=42)
     train_ds = train_val["train"]
     val_ds   = train_val["test"]
     return train_ds, val_ds
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         device_map="cuda:1",
     )
 
-    vllm_model = init_vllm(model_id, "cuda:0", 42)
+    vllm_model = init_vllm(model_id, "cuda:0", global_seed)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=lr)
     policy.train()
 

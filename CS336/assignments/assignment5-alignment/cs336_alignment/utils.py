@@ -36,7 +36,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
         input_id = token[:-1]
         label = token[1:] 
         mask = torch.ones_like(label)
-        mask[0:len(prompt_token) - 1] = 0
+        mask[0:len(prompt_token)-1] = 0
         ret["input_ids"].append(input_id)
         ret["labels"].append(label)
         ret["response_mask"].append(mask)

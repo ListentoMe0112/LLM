@@ -63,8 +63,8 @@ def evaluate_vllm(
 
 if __name__ == "__main__":
     # Load dataset (specify train split)
-    ds = load_dataset("open-r1/OpenR1-Math-220k", "default", split="train")
-    llm = LLM(model="Qwen/Qwen2.5-Math-1.5B", dtype="float32")
+    ds = load_dataset("openai/gsm8k", "main", split="train")
+    llm = LLM(model="Qwen/Qwen2.5-Math-1.5B", dtype="bfloat16")
     sampling_params = SamplingParams(
         temperature=1.0, 
         top_p=1.0, 
