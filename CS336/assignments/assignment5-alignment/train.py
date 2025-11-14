@@ -46,11 +46,9 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 def init_datasets():
-    raw_ds = load_dataset("openai/gsm8k", "main",split="train")
-    train_val = raw_ds.train_test_split(test_size=0.05, seed=42)
-    train_ds = train_val["train"]
-    val_ds   = train_val["test"]
-    return train_ds, val_ds
+    raw_ds_train = load_dataset("openai/gsm8k", "main",split="train")
+    raw_ds_val = load_dataset("openai/gsm8k", "main",split="test")
+    return raw_ds_train,raw_ds_val 
 
 @torch.no_grad()
 def evaluate(val_loader, tokenizer, vllm_model, policy):
