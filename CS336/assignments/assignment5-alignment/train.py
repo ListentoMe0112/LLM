@@ -1,5 +1,6 @@
 from cs336_alignment import utils
 import torch
+import torch.distributed as dist
 from datasets import load_dataset
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from transformers import PreTrainedTokenizerBase, PreTrainedModel,  AutoTokenizer, AutoModelForCausalLM
@@ -7,7 +8,7 @@ from vllm import LLM, SamplingParams
 from unittest.mock import patch
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from torch.utils.data import DataLoader
-
+from tqdm import tqdm
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
     """
@@ -30,7 +31,7 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
         return LLM(
             model=model_id,
             device=device,
-            dtype=torch.float32,
+            dtype=torch.bfloat16,
             enable_prefix_caching=True,
             gpu_memory_utilization=gpu_memory_utilization,
         )
@@ -45,8 +46,8 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 def init_datasets():
-    raw_ds = load_dataset("open-r1/OpenR1-Math-220k", "default", split="train")
-    train_val = raw_ds.train_test_split(test_size=0.05, seed=42)
+    raw_ds = load_dataset("openai/gsm8k", split="train")
+    train_val = raw_ds.train_test_split(test_size=0.01, seed=42)
     train_ds = train_val["train"]
     val_ds   = train_val["test"]
     return train_ds, val_ds
@@ -64,7 +65,7 @@ def evaluate(val_loader, tokenizer, vllm_model, policy):
             answers,
             tokenizer,
             vllm_model,
-            reward_fn=r1_zero_reward_fn,  # 如果换了 reward 模型，这里改掉
+            reward_fn=r1_zero_reward_fn,  
         )
         all_logs.extend(logs)
 
@@ -78,10 +79,11 @@ if __name__ == "__main__":
     global_seed =42
     model_id = "Qwen/Qwen2.5-Math-1.5B"
     lr = 5e-6
-    gradient_accumulation_steps = 8
-    micro_batch_size = 4
+    gradient_accumulation_steps = 16
+    micro_batch_size = 2
     num_epochs = 1
     log_every = 50
+    eval_every = 200
 
     # Load prompt template
     with open("./cs336_alignment/prompts/r1_zero.prompt", "r") as f:
@@ -94,19 +96,18 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     policy = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.float32,
-        device_map="cuda:0",
+        torch_dtype=torch.bfloat16,
+        device_map="cuda:1",
     )
 
-    vllm_model = init_vllm(model_id, "cuda:1", 42)
+    vllm_model = init_vllm(model_id, "cuda:0", 42)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=lr)
     policy.train()
 
     def collate_fn(batch):
-        prompts = [prompt_template.format(question = ex["problem"]) for ex in batch ] 
-        solutions = [ex["solution"] for ex in batch ] 
+        prompts = [prompt_template.format(question = ex["question"]) for ex in batch ] 
         answers = [ex["answer"] for ex in batch]
-        return {"prompts" : prompts, "solutions" : solutions, "answers" :answers}
+        return {"prompts" : prompts,  "answers" :answers}
 
     train_loader = DataLoader(
         train_ds,
@@ -124,19 +125,18 @@ if __name__ == "__main__":
     for epoch in range(num_epochs):
         for batch in train_loader:
             prompts = batch["prompts"]
-            solutions = batch["solutions"]
             answers = batch["answers"]
-            input_infos = utils.tokenize_prompt_and_output(prompt_strs=prompts, output_strs=solutions, tokenizer=tokenizer)
+            input_infos = utils.tokenize_prompt_and_output(prompt_strs=prompts, output_strs=answers, tokenizer=tokenizer)
             ret = utils.get_response_log_probs(policy, input_infos["input_ids"].to("cuda:1"), input_infos["labels"].to("cuda:1"))
-            loss, _ = utils.sft_microbatch_train_step(ret["log_probs"], input_infos["response_mask"].to("cuda:1"), 8)
+            loss, _ = utils.sft_microbatch_train_step(ret["log_probs"], input_infos["response_mask"].to("cuda:1"), 16)
             if (step + 1) % gradient_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            if step % log_every == 0:
+            if (step + 1) % log_every == 0:
                 print(f"step {step}  loss={loss.item():.4f}")
 
-            if step % eval_every == 0:
+            if (step + 1) % eval_every == 0:
                 evaluate(val_loader, tokenizer, vllm_model, policy)
 
             step += 1

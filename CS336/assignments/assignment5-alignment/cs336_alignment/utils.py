@@ -40,8 +40,6 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
         ret["input_ids"].append(input_id)
         ret["labels"].append(label)
         ret["response_mask"].append(mask)
-        if i == 0:
-            print(token)
 
     max_len = max(len(seq) for seq in ret["input_ids"])
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
