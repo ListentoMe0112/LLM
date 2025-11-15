@@ -5,6 +5,21 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from typing import Callable, List, Dict, Tuple
 import json
 
+# {'prompt': 
+#   'A conversation between User and Assistant. The User asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the User with the answer. The reasoning process is enclosed within <think> </think> and answer is enclosed within <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>.\nUser: A robe takes 2 bolts of blue fiber and half that much white fiber.  How many bolts in total does it take?\nAssistant: <think>', 
+# 'generated_response': 
+#   'The amount of white fiber is half as many as the amount of blue fiber, so 1/2*2 is = 1.\nTo find the total amount of fiber, put them together, so 1+2 is = 3.\nThe answer is 3.\n</think>\n<answer>3</answer>', 
+# 'ground_truth_answer':    
+#   '3', 
+# 'format_reward': 0.0, 
+# 'answer_reward': 0.0, 
+# 'reward': 0.0, 
+# 'avg_token_entropy': 0.0, 
+# 'response_length': 66, 
+# 'avg_response_length': 137.328125, 
+# 'avg_correct_response_length': 0.0, 
+# 'avg_incorrect_response_length': 137.328125}
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], Dict[str, float]],

@@ -116,7 +116,7 @@ if __name__ == "__main__":
         for ans in [ex["answer"] for ex in batch]:
             formatted_answer = utils.answer_transform(ans)
             formatted_answers.append(formatted_answer)
-            ground_truth = utils.answer_transform(ans)
+            ground_truth = utils.ground_truth_transform(ans)
             ground_truths.append(ground_truth)
         return {"prompts" : prompts,  "answers" : formatted_answers, "ground_truths" : ground_truths}
 

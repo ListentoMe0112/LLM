@@ -239,7 +239,7 @@ def answer_transform(ans: str) -> str:
         final_answer = match.group(1)
         # Remove the #### part and keep the reasoning
         reasoning = re.sub(r'####\s*\d+', '', ans).strip()
-        formatted_answer = f"{reasoning}\n</think>\n<answer>{final_answer}</answer>"
+        formatted_answer = f"{reasoning}\n</think> <answer>{final_answer}</answer>"
     else:
         # If no #### found, try to extract the last number
         numbers = re.findall(r'\d+', ans)
