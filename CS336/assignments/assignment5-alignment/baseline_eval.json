@@ -1,11 +1,17 @@
-{
-  "name": "Baseline",
-  "accuracy": 0.01592115238817286,
-  "total_samples": 1319,
-  "correct_samples": 21,
-  "format_right_and_answer_right": 21,
-  "format_right_and_answer_wrong": 225,
-  "format_wrong_and_answer_wrong": 1073,
-  "format_correct_total": 246,
-  "answer_correct_total": 21
-}
+[
+  {
+    "name": "Baseline",
+    "accuracy": 0.01592115238817286,
+    "total_samples": 1319,
+    "correct_samples": 21,
+    "format_right_and_answer_right": 21,
+    "format_right_and_answer_wrong": 225,
+    "format_wrong_and_answer_wrong": 1073,
+    "format_correct_total": 246,
+    "answer_correct_total": 21
+  },
+  {
+    "name": "Naive-SFT",
+    "accuracy": 0.2619
+  }
+]
