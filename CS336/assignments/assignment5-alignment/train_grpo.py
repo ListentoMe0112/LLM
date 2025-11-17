@@ -202,17 +202,16 @@ if __name__ == "__main__":
         advantages = advantages.to("cuda:1")
         raw_rewards = raw_rewards.to("cuda:1")
 
-        ret = utils.tokenize_prompt_and_output(repeated_prompts, responses, tokenizer)
-        response_mask = ret["response_mask"].to("cuda:1")
-        ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)
-        log_prob = ret["log_probs"].to("cuda:1")
-
         total_train_step = rollout_batch_size  * epochs_per_rollout_batch // micro_train_batch_size
         for train_step in range(total_train_step):
             start_idx = train_step * micro_train_batch_size
             end_idx = (train_step + 1) * micro_train_batch_size 
-            micro_log_probs = log_prob[start_idx : end_idx]
-            micro_response_mask = response_mask[start_idx : end_idx]
+
+            ret = utils.tokenize_prompt_and_output(repeated_prompts[start_idx : end_idx], responses[start_idx : end_idx], tokenizer)
+            micro_response_mask = ret["response_mask"].to("cuda:1")
+
+            ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)
+            micro_log_probs = ret["log_probs"].to("cuda:1")
             micro_advantages = advantages[start_idx : end_idx]
             micro_raw_rewards = raw_rewards[start_idx : end_idx]
 
