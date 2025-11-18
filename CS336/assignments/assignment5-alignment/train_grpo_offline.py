@@ -217,7 +217,7 @@ if __name__ == "__main__":
             for i in range(micro_train_batch_size):
                 response_logps = logps[start_idx + i]
                 response_len = len(response_logps)
-                prompt_len =  ret["input_token_len"][i].item()
+                prompt_len =  ret["input_token_len"][start_idx + i]
                 micro_old_log_probs[i, prompt_len - 1 : prompt_len - 1 + response_len] = torch.tensor(response_logps, dtype = torch.float32, device="cuda:1") 
 
             ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)

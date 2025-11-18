@@ -66,7 +66,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
     ret["input_ids"] = torch.stack(padded_input_ids)
     ret["labels"] = torch.stack(padded_labels)
     ret["response_mask"] = torch.stack(padded_masks)
-    ret["input_token_len"] = torch.stack(ret["input_token_len"])
+    ret["input_token_len"] = ret["input_token_len"]
     ret["max_len"] = max_len
     return ret
 
