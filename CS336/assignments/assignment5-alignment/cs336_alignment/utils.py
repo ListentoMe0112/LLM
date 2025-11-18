@@ -220,7 +220,7 @@ def log_generations_vllm(
             "reward": rew["reward"],
             "avg_token_entropy": 0.0,  # vLLM 不返回 logits，可后续用 HF 模型补算
             "response_length": len(tokenizer.encode(r)),
-            "logp" : [t.logprob for t in logp] 
+            "logp" : [v.logprob for t in logp for _, v in t.items()] 
         })
         if rew["answer_reward"] > 0:
             correct_lens.append(len(tokenizer.encode(r)))
