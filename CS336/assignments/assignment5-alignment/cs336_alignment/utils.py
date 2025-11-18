@@ -26,6 +26,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
     ret["input_ids"] = []
     ret["labels"] = []
     ret["response_mask"] = []
+    ret["input_token_len"] = []
 
     for i, prompt_str in enumerate(prompt_strs):
         prompt_token = tokenizer.encode(prompt_str)
@@ -40,6 +41,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
         ret["input_ids"].append(input_id)
         ret["labels"].append(label)
         ret["response_mask"].append(mask)
+        ret["input_token_len"].append(len(prompt_token))
 
     max_len = max(len(seq) for seq in ret["input_ids"])
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
@@ -64,6 +66,8 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer) -> Dict[str,
     ret["input_ids"] = torch.stack(padded_input_ids)
     ret["labels"] = torch.stack(padded_labels)
     ret["response_mask"] = torch.stack(padded_masks)
+    ret["input_token_len"] = torch.stack(ret["input_token_len"])
+    ret["max_len"] = max_len
     return ret
 
 
@@ -194,16 +198,18 @@ def log_generations_vllm(
         min_tokens=4,
         stop=["</answer>"], 
         include_stop_str_in_output=True,
+        logprobs=1
     )
 
     outputs = vllm_model.generate(prompt_strs, sampling_params)
 
     responses = [out.outputs[0].text for out in outputs]
+    logps = [out.outputs[0].logprobs for out in outputs]
 
     logs = []
     correct_lens = []
     incorrect_lens = []
-    for p, a, r in zip(prompt_strs, answers, responses):
+    for p, a, r, logp in zip(prompt_strs, answers, responses, logps):
         rew = reward_fn(r, a)
         logs.append({
             "prompt": p,
@@ -214,6 +220,7 @@ def log_generations_vllm(
             "reward": rew["reward"],
             "avg_token_entropy": 0.0,  # vLLM 不返回 logits，可后续用 HF 模型补算
             "response_length": len(tokenizer.encode(r)),
+            "logp" : [log["logprob"] for log in logp] 
         })
         if rew["answer_reward"] > 0:
             correct_lens.append(len(tokenizer.encode(r)))
@@ -484,7 +491,9 @@ def grpo_microbatch_train_step(
     accumulation.
     """
     loss, meta = compute_policy_gradient_loss(policy_log_probs, loss_type, raw_rewards, advantages, old_log_probs, cliprange)
-    loss = masked_mean(loss,response_mask, dim = -1).mean()
+    seq_loss = masked_mean(loss, response_mask, dim=-1)
+    seq_loss = seq_loss[~torch.isnan(seq_loss)]
+    loss = seq_loss.mean()
     loss = loss / gradient_accumulation_steps
     loss.backward()
     return loss, meta

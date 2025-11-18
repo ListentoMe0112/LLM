@@ -87,7 +87,7 @@ if __name__ == "__main__":
     train_batch_size: int = 256 # On-policy
     gradient_accumulation_steps: int = 128 # microbatch size is 2, will fit on H100
     gpu_memory_utilization: float = 0.85
-    loss_type: Literal["no_baseline", "reinforce_with_baseline","grpo_clip"] = "reinforce_with_baseline"
+    loss_type: Literal["no_baseline", "reinforce_with_baseline","grpo_clip"] = "grpo_clip"
     use_std_normalization: bool = True
 
     assert train_batch_size % gradient_accumulation_steps == 0, (
@@ -189,6 +189,7 @@ if __name__ == "__main__":
             )
 
             responses = [log["generated_response"]for log in logs]
+            logps = [log["logp"] for log in logs ]
             assert len(responses) == rollout_batch_size, f"expected length {rollout_batch_size}, get {len(responses)}"
         advantages, raw_rewards, _ = utils.compute_group_normalized_rewards(
             r1_zero_reward_fn, 
@@ -210,10 +211,22 @@ if __name__ == "__main__":
             ret = utils.tokenize_prompt_and_output(repeated_prompts[start_idx : end_idx], responses[start_idx : end_idx], tokenizer)
             micro_response_mask = ret["response_mask"].to("cuda:1")
 
+            # vllm alignment
+            seq_len = ret["max_len"]
+            micro_old_log_probs = torch.zeros(micro_train_batch_size, seq_len, dtype=torch.float32, device="cuda:1") 
+            for i in range(micro_train_batch_size):
+                response_logps = logps[start_idx + i]
+                response_len = len(response_logps)
+                prompt_len =  ret["input_token_len"][i].item()
+                micro_old_log_probs[i, prompt_len - 1 : prompt_len - 1 + response_len] = torch.tensor(response_logps, dtype = torch.float32, device="cuda:1") 
+
             ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)
             micro_log_probs = ret["log_probs"].to("cuda:1")
             micro_advantages = advantages[start_idx : end_idx]
             micro_raw_rewards = raw_rewards[start_idx : end_idx]
+
+            if train_step == 0:
+                assert utils.masked_mean(micro_log_probs, micro_response_mask, dim = -1) == utils.masked_mean(micro_old_log_probs, micro_response_mask, dim = -1), f"exptect{micro_log_probs} get {micro_response_mask}"
 
             loss, _ = utils.grpo_microbatch_train_step(
                 micro_log_probs, 
@@ -222,8 +235,8 @@ if __name__ == "__main__":
                 loss_type, 
                 micro_raw_rewards.unsqueeze(-1), 
                 micro_advantages.unsqueeze(-1), 
-                None, 
-                None
+                micro_old_log_probs, 
+                0.8 
             )
 
             if (train_step + 1) % gradient_accumulation_steps == 0:
@@ -236,3 +249,4 @@ if __name__ == "__main__":
         
         if (grpo_step + 1) % eval_every == 0:
             evaluate(val_loader, tokenizer, vllm_model, policy)
+
