@@ -213,12 +213,9 @@ if __name__ == "__main__":
 
             # vllm alignment
             seq_len = ret["max_len"]
-            micro_old_log_probs = torch.zeros(micro_train_batch_size, seq_len, dtype=torch.float32, device="cuda:1") 
+            micro_old_log_probs = torch.zeros(micro_train_batch_size, seq_len, dtype=torch.bfloat16, device="cuda:1") 
             for i in range(micro_train_batch_size):
-                response_logps = logps[start_idx + i]
-                response_len = len(response_logps)
-                prompt_len =  ret["input_token_len"][start_idx + i]
-                micro_old_log_probs[i, prompt_len - 1 : prompt_len - 1 + response_len] = torch.tensor(response_logps, dtype = torch.float32, device="cuda:1") 
+                micro_old_log_probs[i, 0:len(logs[start_idx + i]["logp"])] = torch.tensor(logs[start_idx + i]["logp"], dtype=micro_response_mask.dtype, device = micro_response_mask.device)
 
             ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)
             micro_log_probs = ret["log_probs"].to("cuda:1")
@@ -226,7 +223,7 @@ if __name__ == "__main__":
             micro_raw_rewards = raw_rewards[start_idx : end_idx]
 
             if train_step == 0:
-                assert utils.masked_mean(micro_log_probs, micro_response_mask, dim = -1) == utils.masked_mean(micro_old_log_probs, micro_response_mask, dim = -1), f"exptect{micro_log_probs} get {micro_response_mask}"
+                assert torch.allclose(utils.masked_mean(micro_log_probs, micro_response_mask, dim = -1) , utils.masked_mean(micro_old_log_probs, micro_response_mask, dim = -1), atol=1e-4 ), f"exptect{micro_log_probs} get {micro_response_mask}"
 
             loss, _ = utils.grpo_microbatch_train_step(
                 micro_log_probs, 

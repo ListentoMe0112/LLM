@@ -171,6 +171,38 @@ def sft_microbatch_train_step(
     metadata = dict()
     return loss, metadata
 
+def extract_sampled_logps_from_dicts(output):
+    """Return the logp for each sampled token in the output."""
+    sampled_logps = []
+    token_ids = output.outputs[0].token_ids
+    logprob_dicts = output.outputs[0].logprobs
+
+    for tid, lp_dict in zip(token_ids, logprob_dicts):
+        # Find the entry whose LogProb.token_id matches the sampled token id
+        for _, lp in lp_dict.items():
+            if lp.token_id == tid:
+                sampled_logps.append(lp.logprob)
+                break
+
+    return sampled_logps
+
+def extract_sampled_logps(output):
+    # 1. prompt tokens
+    prompt_ids = output.prompt_token_ids
+    prompt_lp_dicts = output.prompt_logprobs
+    prompt_logps = extract_sampled_logps_from_dicts(prompt_ids, prompt_lp_dicts)
+
+    assert len(prompt_ids) == len(prompt_logps), f"expectd {len(prompt_ids)} token, get {len(prompt_logps)}"
+
+    # 2. generated tokens
+    gen_ids = output.outputs[0].token_ids
+    gen_lp_dicts = output.outputs[0].logprobs
+    gen_logps = extract_sampled_logps_from_dicts(gen_ids, gen_lp_dicts)
+
+    assert len(gen_ids) == len(gen_logps), f"expectd {len(gen_ids)} token, get {len(gen_logps)}"
+
+    return prompt_logps + gen_logps
+
 def log_generations_vllm(
     prompt_strs: list[str],
     answers: list[str],
@@ -198,18 +230,19 @@ def log_generations_vllm(
         min_tokens=4,
         stop=["</answer>"], 
         include_stop_str_in_output=True,
-        logprobs=1
+        logprobs=1,
+        prompt_logprobs=True
     )
 
     outputs = vllm_model.generate(prompt_strs, sampling_params)
 
     responses = [out.outputs[0].text for out in outputs]
-    logps = [out.outputs[0].logprobs for out in outputs]
+    sampled_logps_list = [extract_sampled_logps(out) for out in outputs]
 
     logs = []
     correct_lens = []
     incorrect_lens = []
-    for p, a, r, logp in zip(prompt_strs, answers, responses, logps):
+    for p, a, r, logp in zip(prompt_strs, answers, responses, sampled_logps_list):
         rew = reward_fn(r, a)
         logs.append({
             "prompt": p,
@@ -220,8 +253,9 @@ def log_generations_vllm(
             "reward": rew["reward"],
             "avg_token_entropy": 0.0,  # vLLM 不返回 logits，可后续用 HF 模型补算
             "response_length": len(tokenizer.encode(r)),
-            "logp" : [v.logprob for t in logp for _, v in t.items()] 
+            "logp" : logp
         })
+
         if rew["answer_reward"] > 0:
             correct_lens.append(len(tokenizer.encode(r)))
         else:
