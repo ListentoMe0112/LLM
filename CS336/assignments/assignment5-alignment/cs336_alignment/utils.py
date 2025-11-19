@@ -176,8 +176,8 @@ def extract_sampled_logps_from_dicts(token_ids, logprob_dicts):
     sampled_logps = []
     for tid, lp_dict in zip(token_ids, logprob_dicts):
         # Find the entry whose LogProb.token_id matches the sampled token id
-        for _, lp in lp_dict.items():
-            if lp.token_id == tid:
+        for token_id, lp in lp_dict.items():
+            if token_id == tid:
                 sampled_logps.append(lp.logprob)
                 break
 
