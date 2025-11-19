@@ -187,7 +187,7 @@ def extract_sampled_logps(output):
     # 1. prompt tokens
     prompt_ids = output.prompt_token_ids
     prompt_lp_dicts = output.prompt_logprobs
-    prompt_logps = extract_sampled_logps_from_dicts(prompt_ids, prompt_lp_dicts)
+    prompt_logps = extract_sampled_logps_from_dicts(prompt_ids[1:], prompt_lp_dicts[1:])
 
     assert len(prompt_ids) == len(prompt_logps), f"expectd {len(prompt_ids)} token, get {len(prompt_logps)}"
 
