@@ -194,9 +194,7 @@ if __name__ == "__main__":
                     reward_fn=r1_zero_reward_fn,  
                 )
                 
-                responses.extend([log["generated_response"] for log in batch_logs])
-                logps.extend([log["logp"] for log in batch_logs])
-                
+                logs.extend(batch_logs)
                 # 清理中间变量
                 del batch_logs
                 torch.cuda.empty_cache()
