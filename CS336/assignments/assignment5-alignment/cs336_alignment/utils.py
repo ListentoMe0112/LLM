@@ -171,12 +171,9 @@ def sft_microbatch_train_step(
     metadata = dict()
     return loss, metadata
 
-def extract_sampled_logps_from_dicts(output):
+def extract_sampled_logps_from_dicts(token_ids, logprob_dicts):
     """Return the logp for each sampled token in the output."""
     sampled_logps = []
-    token_ids = output.outputs[0].token_ids
-    logprob_dicts = output.outputs[0].logprobs
-
     for tid, lp_dict in zip(token_ids, logprob_dicts):
         # Find the entry whose LogProb.token_id matches the sampled token id
         for _, lp in lp_dict.items():

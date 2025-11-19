@@ -181,8 +181,8 @@ if __name__ == "__main__":
             load_policy_into_vllm_instance(policy, vllm_model)
             responses = []
             logs = []
-            batch_size = 64
-            for i in range(0, len(repeated_prompts), 64):
+            batch_size = 2
+            for i in range(0, len(repeated_prompts), batch_size):
                 batch_prompts = repeated_prompts[i:i+batch_size]
                 batch_ground_truths = repeated_ground_truths[i:i+batch_size]
                 
