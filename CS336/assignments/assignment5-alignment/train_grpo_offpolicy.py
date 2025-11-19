@@ -177,31 +177,31 @@ if __name__ == "__main__":
         for prompt in prompts:
             repeated_prompts.extend([prompt] * group_size)
 
+        # generate vllm outcome
         with torch.no_grad():
             load_policy_into_vllm_instance(policy, vllm_model)
             responses = []
-            logs = []
-            batch_size = 2
-            for i in range(0, len(repeated_prompts), batch_size):
-                batch_prompts = repeated_prompts[i:i+batch_size]
-                batch_ground_truths = repeated_ground_truths[i:i+batch_size]
+            logs = utils.log_generations_vllm(
+                repeated_prompts,
+                repeated_ground_truths,
+                tokenizer,
+                vllm_model,
+                reward_fn=r1_zero_reward_fn,  
+            )
                 
-                batch_logs = utils.log_generations_vllm(
-                    batch_prompts,
-                    batch_ground_truths,
-                    tokenizer,
-                    vllm_model,
-                    reward_fn=r1_zero_reward_fn,  
-                )
-                
-                logs.extend(batch_logs)
-                # 清理中间变量
-                del batch_logs
-                torch.cuda.empty_cache()
-
             responses = [log["generated_response"]for log in logs]
-            logps = [log["logp"] for log in logs ]
+            # logps = [log["logp"] for log in logs ]
             assert len(responses) == rollout_batch_size, f"expected length {rollout_batch_size}, get {len(responses)}"
+
+        # calculate oldlogp
+        with torch.no_grad():
+            ret = utils.tokenize_prompt_and_output(repeated_prompts, responses, tokenizer)
+            responses_mask = ret["response_mask"].to("cuda:1")
+            old_logps = []
+            for i in range(0, len(responses_mask), micro_train_batch_size):
+                old_logps_ret = utils.get_response_log_probs(policy, ret["input_ids"][i:i+micro_train_batch_size].to("cuda:1"), ret["labels"][i:i+micro_train_batch_size].to("cuda:1"), False)
+                old_logps.extend(old_logps_ret["log_probs"])
+
         advantages, raw_rewards, _ = utils.compute_group_normalized_rewards(
             r1_zero_reward_fn, 
             responses, 
@@ -219,17 +219,12 @@ if __name__ == "__main__":
             start_idx = train_step * micro_train_batch_size
             end_idx = (train_step + 1) * micro_train_batch_size 
 
-            ret = utils.tokenize_prompt_and_output(repeated_prompts[start_idx : end_idx], responses[start_idx : end_idx], tokenizer)
-            micro_response_mask = ret["response_mask"].to("cuda:1")
-
-            # vllm alignment
-            seq_len = ret["max_len"]
-            micro_old_log_probs = torch.zeros(micro_train_batch_size, seq_len, dtype=torch.bfloat16, device="cuda:1") 
-            for i in range(micro_train_batch_size):
-                micro_old_log_probs[i, 0:len(logs[start_idx + i]["logp"])] = torch.tensor(logs[start_idx + i]["logp"], dtype=micro_response_mask.dtype, device = micro_response_mask.device)
-
-            ret = utils.get_response_log_probs(policy, ret["input_ids"].to("cuda:1"), ret["labels"].to("cuda:1"), False)
-            micro_log_probs = ret["log_probs"].to("cuda:1")
+            micro_input_ids = ret["input_ids"][start_idx : end_idx].to("cuda:1")
+            micro_input_labels = ret["labels"][start_idx : end_idx].to("cuda:1")
+            micro_response_mask = ret["response_mask"][start_idx : end_idx].to("cuda:1")
+            micro_old_log_probs = old_logps_ret[start_idx : end_idx].to("cuda:1")
+            micor_logp_ret = utils.get_response_log_probs(policy, micro_input_ids, micro_input_labels, False)
+            micro_log_probs = micor_logp_ret["log_probs"].to("cuda:1")
             micro_advantages = advantages[start_idx : end_idx]
             micro_raw_rewards = raw_rewards[start_idx : end_idx]
 

@@ -227,8 +227,8 @@ def log_generations_vllm(
         min_tokens=4,
         stop=["</answer>"], 
         include_stop_str_in_output=True,
-        logprobs=1,
-        prompt_logprobs=True
+        # logprobs=1,
+        # prompt_logprobs=True
     )
 
     outputs = vllm_model.generate(prompt_strs, sampling_params)
