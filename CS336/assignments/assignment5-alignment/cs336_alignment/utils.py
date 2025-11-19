@@ -234,12 +234,11 @@ def log_generations_vllm(
     outputs = vllm_model.generate(prompt_strs, sampling_params)
 
     responses = [out.outputs[0].text for out in outputs]
-    sampled_logps_list = [extract_sampled_logps(out) for out in outputs]
 
     logs = []
     correct_lens = []
     incorrect_lens = []
-    for p, a, r, logp in zip(prompt_strs, answers, responses, sampled_logps_list):
+    for p, a, r in zip(prompt_strs, answers, responses):
         rew = reward_fn(r, a)
         logs.append({
             "prompt": p,
