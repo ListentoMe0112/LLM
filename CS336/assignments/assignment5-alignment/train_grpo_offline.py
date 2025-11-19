@@ -180,13 +180,26 @@ if __name__ == "__main__":
         with torch.no_grad():
             load_policy_into_vllm_instance(policy, vllm_model)
             responses = []
-            logs = utils.log_generations_vllm(
-                repeated_prompts,
-                repeated_ground_truths,
-                tokenizer,
-                vllm_model,
-                reward_fn=r1_zero_reward_fn,  
-            )
+            logs = []
+            batch_size = 64
+            for i in range(0, len(repeated_prompts), 64):
+                batch_prompts = repeated_prompts[i:i+batch_size]
+                batch_ground_truths = repeated_ground_truths[i:i+batch_size]
+                
+                batch_logs = utils.log_generations_vllm(
+                    batch_prompts,
+                    batch_ground_truths,
+                    tokenizer,
+                    vllm_model,
+                    reward_fn=r1_zero_reward_fn,  
+                )
+                
+                responses.extend([log["generated_response"] for log in batch_logs])
+                logps.extend([log["logp"] for log in batch_logs])
+                
+                # 清理中间变量
+                del batch_logs
+                torch.cuda.empty_cache()
 
             responses = [log["generated_response"]for log in logs]
             logps = [log["logp"] for log in logs ]
