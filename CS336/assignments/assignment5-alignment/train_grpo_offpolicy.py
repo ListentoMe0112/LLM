@@ -201,7 +201,7 @@ if __name__ == "__main__":
             for i in range(0, len(responses_mask), micro_train_batch_size):
                 old_logps_ret = utils.get_response_log_probs(policy, ret["input_ids"][i:i+micro_train_batch_size].to("cuda:1"), ret["labels"][i:i+micro_train_batch_size].to("cuda:1"), False)
                 old_logps.extend(old_logps_ret["log_probs"])
-            old_logps = torch.tensor(old_logps, device= old_logps[0].device, dtype = old_logps.dtype)
+            old_logps = torch.stack(old_logps, device= old_logps[0].device, dtype = old_logps[0].dtype)
 
         advantages, raw_rewards, _ = utils.compute_group_normalized_rewards(
             r1_zero_reward_fn, 
@@ -217,8 +217,8 @@ if __name__ == "__main__":
 
         total_train_step = rollout_batch_size  * epochs_per_rollout_batch // micro_train_batch_size
         for train_step in range(total_train_step):
-            start_idx = train_step * micro_train_batch_size
-            end_idx = (train_step + 1) * micro_train_batch_size 
+            start_idx = (train_step * micro_train_batch_size) % rollout_batch_size
+            end_idx = start_idx + micro_train_batch_size
 
             micro_input_ids = ret["input_ids"][start_idx : end_idx].to("cuda:1")
             micro_input_labels = ret["labels"][start_idx : end_idx].to("cuda:1")
