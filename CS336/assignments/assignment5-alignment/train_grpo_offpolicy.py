@@ -201,6 +201,7 @@ if __name__ == "__main__":
             for i in range(0, len(responses_mask), micro_train_batch_size):
                 old_logps_ret = utils.get_response_log_probs(policy, ret["input_ids"][i:i+micro_train_batch_size].to("cuda:1"), ret["labels"][i:i+micro_train_batch_size].to("cuda:1"), False)
                 old_logps.extend(old_logps_ret["log_probs"])
+            old_logps = torch.tensor(old_logps, device= old_logps[0].device, dtype = old_logps.dtype)
 
         advantages, raw_rewards, _ = utils.compute_group_normalized_rewards(
             r1_zero_reward_fn, 
@@ -222,7 +223,7 @@ if __name__ == "__main__":
             micro_input_ids = ret["input_ids"][start_idx : end_idx].to("cuda:1")
             micro_input_labels = ret["labels"][start_idx : end_idx].to("cuda:1")
             micro_response_mask = ret["response_mask"][start_idx : end_idx].to("cuda:1")
-            micro_old_log_probs = old_logps_ret[start_idx : end_idx].to("cuda:1")
+            micro_old_log_probs = old_logps[start_idx : end_idx].to("cuda:1")
             micor_logp_ret = utils.get_response_log_probs(policy, micro_input_ids, micro_input_labels, False)
             micro_log_probs = micor_logp_ret["log_probs"].to("cuda:1")
             micro_advantages = advantages[start_idx : end_idx]
